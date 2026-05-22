@@ -10,13 +10,22 @@ enabling the RIT-aware Zero Beat path that issue #300's design doc deferred.
 
 ## TL;DR
 
-Zeus today has a placeholder `RIT` button in the transport bar (`App.tsx:743`)
-that does nothing, and TCI stubs (`TciSession.cs:1095-1134`) that ignore RIT
-and XIT set-commands. This PR turns both into a real feature: a single cycle
-button drives a 3-state machine (OFF → RIT → XIT → OFF), an offset sub-row
-appears under the VFO display with ▲/▼ spinners and a Clear button, and the
-existing host-side frequency-offset pipeline (CwOffset, freq-correction #325)
-grows a second branch so RX and TX wire frequencies can diverge.
+Zeus today has a placeholder `RIT` button in the transport bar
+(`App.tsx:773`) that does nothing, and TCI stubs (`TciSession.cs:1095-1134`)
+that ignore RIT and XIT set-commands. This PR turns both into a real
+feature: a single cycle button drives a 3-state machine
+(OFF → RIT → XIT → OFF), an offset sub-row appears under the VFO display
+with ▲/▼ spinners and a Clear button, and the existing host-side
+frequency-offset pipeline (CwOffset, freq-correction #325) grows a second
+branch so RX and TX wire frequencies can diverge.
+
+**Post-CTUN update (2026-05-22).** Since the first draft, upstream landed
+CTUN (Click-Tune, issue #427, commit 893b94e). The wire model now carries
+three frequencies — `VfoHz` (dial), `RadioLoHz` (frozen hardware NCO when
+CTUN is on), plus the CW pitch via `EffectiveLoHz`. RIT integrates with
+CTUN's WDSP shift mechanism without breaking the rename; XIT in CTUN-on
+needs a separate UX call. See §"Interaction with CTUN" for the full
+revised wire formula and the open call on XIT × CTUN.
 
 This PR is the **substrate** that makes RIT-aware Zero Beat possible — a
 follow-up PR will extend `RadioService.ZeroBeat` to target the RIT register
@@ -83,7 +92,7 @@ and conflating them causes confusion in the codebase and the UI.
   case: a DX station on 14.220 listening up 5–10 kHz at 14.225–14.230.
 
 Most commercial rigs implement both, and they compose (you can RIT on top
-of SPLIT). Zeus has a `SPLIT` placeholder in `App.tsx:742` next to the `RIT`
+of SPLIT). Zeus has a `SPLIT` placeholder in `App.tsx:772` next to the `RIT`
 one; that's a separate feature deserving its own PR.
 
 ### Why not just inherit from frequency-correction #325 / #334
@@ -215,7 +224,7 @@ via SignalR `StreamingHub` — the new fields ride along.
 
 Two new components, one existing component touched:
 
-**`IncrementalTuningButton.tsx`** (new — replaces `App.tsx:743` placeholder)
+**`IncrementalTuningButton.tsx`** (new — replaces `App.tsx:773` placeholder)
 - Renders as a single button in the transport bar.
 - Single click cycles: OFF → RIT → XIT → OFF.
 - Label changes per state: dim "RIT/XIT" when OFF, lit "RIT" or "XIT" with
@@ -288,6 +297,175 @@ see §"Open questions for the maintainer".
 
 If Doug prefers, this TCI block can split into a follow-up PR to make this
 one atomic on the substrate alone.
+
+## Interaction with CTUN (issue #427)
+
+This section was added in the 2026-05-22 revision after upstream landed
+CTUN (commit 893b94e). It revises §"Effective wire-frequency formula"
+above without contradicting the rest of the design — the substrate
+(`VfoAHz` → `RxFreqAHz` + `TxFreqAHz` rename, `SetVfos(rx, tx)` setter,
+the cycle button, the auto-clear table) stays as written. What changes
+is the orchestrator math.
+
+### The three-frequency model post-CTUN
+
+`StateDto` now carries three frequency-related fields:
+
+- `VfoHz` — operator dial (what they see)
+- `RadioLoHz` — hardware NCO frequency (where the radio is physically
+  tuned)
+- `Mode` — RxMode driving `EffectiveLoHz(VfoHz, mode)` (the existing
+  helper that bakes in the CW pitch shift)
+
+CTUN OFF: `RadioLoHz == VfoHz` always. Effective hardware frequency
+is `EffectiveLoHz(VfoHz, mode)`.
+
+CTUN ON: `RadioLoHz` is frozen at whatever value `EffectiveLoHz(VfoHz,
+mode)` had when CTUN was toggled. `VfoHz` roams freely. WDSP's `shift`
+stage (RXA-side only, see `Zeus.Dsp/Wdsp/WdspDspEngine.cs:528-537`) is
+fed `shiftHz = EffectiveLoHz(VfoHz, mode) - RadioLoHz` so the dial
+position still demodulates to audio baseband. Code paths:
+`RadioService.SetVfo` skips the wire retune when CTUN is on
+(`RadioService.cs:582-598`); `DspPipelineService.OnRadioStateChanged`
+pushes `RadioLoHz` to the wire instead of `EffectiveLoHz(...)` and
+calls `engine.SetCtunShift(channel, shiftHz)` with the dial offset
+(`DspPipelineService.cs:540-555`).
+
+### RIT in CTUN — rides the shift
+
+RIT shifts the RX-effective frequency by `ritDelta` Hz. Both CTUN modes
+have a clean integration:
+
+**CTUN OFF (legacy path, what the v1 design described):**
+
+```
+rxWireHz = EffectiveLoHz(VfoHz + ritDelta, mode)
+shiftHz  = 0
+```
+
+The radio NCO retunes; no WDSP shift.
+
+**CTUN ON (new path):**
+
+```
+rxWireHz = RadioLoHz                                       (unchanged — radio frozen)
+shiftHz  = EffectiveLoHz(VfoHz + ritDelta, mode) - RadioLoHz
+```
+
+The radio NCO stays at `RadioLoHz`. WDSP's shift gets extended by
+`ritDelta` so the demod hears the dial-plus-RIT position. The operator
+gets "no spectrum reflow" UX for free — same property CTUN already
+provides.
+
+Implementation-wise, `DspPipelineService.OnRadioStateChanged` already
+computes `ctunShiftHz` (line 548). It only needs to read `_itRitHz` from
+the snapshot when `_itMode == Rit` and add it to the shift:
+
+```csharp
+int ritDelta = (s.ItMode == IncrementalTuningMode.Rit) ? s.RitOffsetHz : 0;
+int ctunShiftHz = s.CtunEnabled
+    ? (int)(CwOffset.EffectiveLoHz(s.Mode, s.VfoHz + ritDelta) - s.RadioLoHz)
+    : 0;
+```
+
+And the CTUN-OFF wire push needs the same delta:
+
+```csharp
+long rxWireHz = s.CtunEnabled
+    ? s.RadioLoHz
+    : CwOffset.EffectiveLoHz(s.Mode, s.VfoHz + ritDelta);
+```
+
+### XIT in CTUN — three options, recommend (A)
+
+XIT shifts TX. WDSP's `shift` stage is RX-only — `SetRXAShiftFreq` and
+`RXANBPSetShiftFrequency` both touch the analyzer chain. There's no
+symmetric TX-side shift in WDSP. So XIT can't simply ride the CTUN
+shift the way RIT does.
+
+Compounding: today Zeus already pushes `RadioLoHz` to the wire during
+MOX when CTUN is on (`DspPipelineService.cs:513`). That means TX in
+CTUN-on transmits at the frozen NCO position, **not** at where the
+operator's dial sits. Whether this is intentional or a known limitation
+of the CTUN PR is itself worth checking — see §Open questions.
+
+Three candidate approaches for XIT × CTUN:
+
+| | Approach | Implication |
+|---|---|---|
+| **A** | XIT silently disabled while CTUN is on | Cycle button OFF→RIT works; OFF→RIT→XIT skips XIT and goes OFF→RIT→OFF when `CtunEnabled`. If operator wants XIT, they disable CTUN first. Cleanest semantic, smallest implementation, lines up with CTUN's existing TX-in-CTUN limitation. |
+| **B** | XIT auto-disables CTUN on MOX, re-enables on MOX release | The radio retunes to `EffectiveLoHz(VfoHz + xitDelta, mode)` for TX, snaps back to `RadioLoHz` on key-up. Operator intent honoured. Cost: MOX-edge plumbing through `RadioService` and the wire layer, two persistent state transitions per keying event. |
+| **C** | Full CTUN-aware TX retuning without disabling CTUN | Wire TxFreqAHz gets `EffectiveLoHz(VfoHz + xitDelta, mode)` while wire RxFreqAHz stays at `RadioLoHz`. The radio NCO has to follow the TxFreq slot during MOX (Protocol-1 frame already routes TxFreq separately, see `Protocol1Client.cs:870-883`). Most powerful, biggest implementation, breaks CTUN's "frozen NCO" invariant during keying. |
+
+**Recommendation: A.** Document the limitation, give operators a clean
+state machine, defer (B) or (C) to a future PR if real-world use surfaces
+the gap. Two reasons:
+
+- CTUN is mostly RX-time band-scanning. XIT use cases (chasing a drifting
+  station you're in QSO with) tend to assume "I'm in a stable conversation,
+  not band-scanning". The two workflows rarely overlap.
+- Doug's CTUN PR already accepts the limitation that TX in CTUN-on goes
+  to `RadioLoHz`. Adding XIT × CTUN complexity on top is a separate
+  conversation; A defers it cleanly.
+
+### Wire-formula consolidated
+
+The complete post-CTUN orchestrator formula:
+
+```
+ritDelta = (ItMode == Rit) ? RitOffsetHz : 0
+xitDelta = (ItMode == Xit && !CtunEnabled) ? XitOffsetHz : 0       // option A
+
+rxWireHz = CtunEnabled ? RadioLoHz
+                       : EffectiveLoHz(VfoHz + ritDelta, Mode)
+txWireHz = CtunEnabled ? RadioLoHz
+                       : EffectiveLoHz(VfoHz + xitDelta, Mode)
+shiftHz  = CtunEnabled ? EffectiveLoHz(VfoHz + ritDelta, Mode) - RadioLoHz
+                       : 0
+```
+
+When `ItMode == Off`, both deltas are zero and the formula collapses to
+the current (pre-RIT/XIT) CTUN behaviour byte-for-byte. When CTUN is OFF
+and ItMode != Off, it matches the v1 design exactly. The new behaviour
+only kicks in when both are active simultaneously, which is RIT × CTUN.
+
+### Persistence asymmetry
+
+CTUN persists to LiteDB across reconnect (commit 893b94e adds
+`CtunEnabled` and `RadioLoHz` to `RadioStateStore`). RIT/XIT do **not**
+persist (the original design's auto-clear table treats disconnect as a
+true clear).
+
+On reconnect with `CtunEnabled = true` persisted:
+- The radio retunes to the persisted `RadioLoHz`
+- `_itMode = Off`, `_itRitHz = 0`, `_itXitHz = 0`
+- Operator must re-enable RIT manually if they want it
+
+This asymmetry is intentional: CTUN is a mode-config (operator's
+preferred way of operating), RIT/XIT are momentary state (where you are
+in the current QSO). It matches Thetis behaviour where RIT clears on
+power cycle but CTUN-equivalent does not.
+
+### Frontend coexistence
+
+Post-CTUN the transport bar reads `SPLIT | RIT | SAVE MEM | CTUN`. CTUN
+is the new button at the right end of the row (commit 893b94e adds it
+after SAVE MEM). The `RIT` placeholder at `App.tsx:773` is still vacant
+— our cycle button slots in there with no further layout work.
+
+Visual coexistence: both buttons use the same `btn ghost hide-mobile`
+class and `--accent` lit-when-active treatment. Two adjacent buttons
+both potentially lit (CTUN engaged + RIT cycle active) is fine — they
+represent orthogonal modes and the operator already deals with the same
+visual pattern from MOX / TUN / PS toggles on the left side of the bar.
+
+### Test impact
+
+The §Testing-strategy buckets stay as written, plus three new cases:
+
+1. **Orchestrator test** — `SetIncrementalTuning(Rit, +250)` with `CtunEnabled=true`: assert no wire VfoHz change, assert `SetCtunShift` was called with `EffectiveLoHz(VfoHz + 250, mode) - RadioLoHz`.
+2. **Orchestrator test** — `SetIncrementalTuning(Xit, +500)` with `CtunEnabled=true`: under option (A), assert state mutation is rejected or the offset is stored but not applied to wire. Behaviour to confirm with Doug.
+3. **Reconnect test** — `CtunEnabled=true` persisted, `_itRitHz=+250` runtime: simulate disconnect/reconnect, assert CTUN restored, RIT cleared.
 
 ## Data flow
 
@@ -509,9 +687,9 @@ when its turn comes.
   DTO already has a `byte? RxId` forward-compatible parameter; we add a
   sibling `target: "vfo" | "rit"`.
 - **SPLIT.** Independent feature, separate PR. The `SPLIT` placeholder
-  in `App.tsx:742` becomes its own button when that work happens.
+  in `App.tsx:772` becomes its own button when that work happens.
 - **Memory recall.** Not implemented today (the `SAVE MEM` button at
-  `App.tsx:744` is also a placeholder). When memory cells arrive, recall
+  `App.tsx:774` is also a placeholder). When memory cells arrive, recall
   will overwrite `_itMode` / `_itRitHz` / `_itXitHz` from the stored
   cell. The clear-rule table above already lists this as a hook.
 - **Configurable keyboard shortcuts.** Zeus has no hotkey-preferences UI
@@ -587,8 +765,34 @@ Doug. Each item is a judgement call we made; happy to revise on his read.
    `dial + offset`. The smoke checklist above plus 5 reality-checks
    feels right. If you'd rather we run a fuller envelope, name it.
 
+9. **XIT × CTUN: option (A) — XIT disabled while CTUN is on.** See
+   §"Interaction with CTUN". We picked the simplest option: the cycle
+   button refuses XIT transitions when `CtunEnabled`, so the operator
+   either uses CTUN (RX-side band scanning) or XIT (TX-side offset), not
+   both. Alternatives (B) auto-disable CTUN on MOX, or (C) full CTUN-aware
+   TX retuning, are both bigger and uglier. If you'd rather we tackle the
+   MOX-edge plumbing for (B) or (C), say so and we'll redesign.
+
+10. **CTUN today TX-routes to `RadioLoHz`, not `VfoHz`.** Reading commit
+    893b94e, `DspPipelineService.cs:513` pushes `s.CtunEnabled ?
+    s.RadioLoHz : EffectiveLoHz(s)` to the wire — meaning during MOX with
+    CTUN on, TX happens at the frozen NCO, not the operator's dial
+    position. Is that the intended behaviour? If yes, our XIT option (A)
+    is internally consistent with it. If it's a known limitation you
+    plan to fix, our XIT design might need to follow that fix.
+
 ## Notes / receipts
 
+- **CTUN integration** (added 2026-05-22): upstream commit `893b94e`
+  (`feat(#427): CTUN — freeze radio NCO while dial roams`) landed
+  between the first design draft and now. Touch points to read for
+  context: `Zeus.Server.Hosting/RadioService.cs:576-654` (SetVfo gated
+  on CTUN, SetCtun toggle), `Zeus.Server.Hosting/DspPipelineService.cs:
+  508-555` (P2 wire push + shift computation), `Zeus.Contracts/Dtos.cs:
+  259-274` (StateDto fields), `Zeus.Dsp/Wdsp/WdspDspEngine.cs:528-537`
+  (the `SetCtunShift` → `SetRXAShiftFreq` plumbing). The shift is
+  RXA-only — there is no symmetric TX shift in WDSP, which is the
+  technical root of the XIT × CTUN open question.
 - **Thetis reference**: `console.cs:31773-31787` for the canonical
   `rx_freq` / `tx_freq` independent calculation, `console.cs:7624-7633`
   for the filter-aware step (10 / 5 Hz), `console.cs:36052` for
