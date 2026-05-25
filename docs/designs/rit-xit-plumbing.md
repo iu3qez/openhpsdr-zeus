@@ -1,19 +1,21 @@
 # RIT / XIT plumbing — design
 
-**Status:** DRAFT — pending operator smoke test, then maintainer review.
-**Date:** 2026-05-16 (revised 2026-05-25 — removed retired CTUN interaction).
-**Author:** Simone Fabris (iu3qez), with Claude.
-**Upstream issue:** none yet — pairs with #300 (CW-only missing features) by
-enabling the RIT-aware Zero Beat path that issue #300's design doc deferred.
-**Branch (forthcoming):** `iu3qez/rit-xit` off `upstream/develop`.
+**Status:** IMPLEMENTED — pending operator smoke test + on-air validation,
+then maintainer review. Wire rename, backend, frontend, and panadapter
+marker are all landed; TCI handlers are still stubs (follow-up PR).
+**Date:** 2026-05-16 (revised 2026-05-25 — implementation complete).
+**Author:** Simone Fabris (IU3QEZ), with Claude.
+**Upstream issue:** relates to #96 (Split VFO) — the `RxFreqAHz` +
+`TxFreqAHz` wire rename is the substrate that #96 will build on.
+**Branch:** `claude/kind-keller-hygeb` on `iu3qez/openhpsdr-zeus`.
 **Pairs with:** Zero Beat (issue #300 — landed as #499, reverted in #510,
 pending re-implementation).
 
 ## TL;DR
 
-Zeus today has a placeholder `RIT` button in the transport bar
-(`App.tsx:770`) that does nothing, and TCI stubs (`TciSession.cs:1095-1134`)
-that ignore RIT and XIT set-commands. This PR turns both into a real
+Zeus had a placeholder `RIT` button in the transport bar (`App.tsx:770`)
+that did nothing, and TCI stubs (`TciSession.cs:1095-1134`) that ignore
+RIT and XIT set-commands. This PR replaced the placeholder with a real
 feature: a single cycle button drives a 3-state machine
 (OFF → RIT → XIT → OFF), an offset sub-row appears under the VFO display
 with ▲/▼ spinners and a Clear button, and the existing host-side
@@ -45,7 +47,7 @@ as a feature ham operators actually want.
 ## Goal
 
 Match the standard ham-radio RIT/XIT workflow: operator engages RIT, dials a
-small offset (±9.999 kHz max), the RX is shifted while TX stays on the dial.
+small offset (±3 kHz max), the RX is shifted while TX stays on the dial.
 XIT mirrors that for TX. One offset active at a time, single cycle button to
 switch between RIT and XIT and back to OFF, per-mode offset preserved across
 the cycle so the operator can park RIT, try XIT, and come back to find their
@@ -73,21 +75,14 @@ You'd think wiring up the placeholder `RIT` button is a one-day job — just
 add an event handler, send the offset to the radio, done. It isn't, because
 of how Zeus currently models radio frequency.
 
-Today the wire format treats RX freq and TX freq as the same number. In
-`ControlFrame.cs:200-205` the switch case for the five frequency registers
-(`TxFreq`, `RxFreq`, `RxFreq2`, `RxFreq3`, `RxFreq4`) writes `state.VfoAHz`
-into all of them. The comment explicitly notes this:
-
-> *"All five frequency registers carry the same VfoAHz here — Zeus has no
-> separate TX VFO. ... for CW, EffectiveLoHz is already baked into VfoAHz
-> upstream in RadioService.SetVfo."*
-
-RIT means RX freq diverges from the dial. XIT means TX freq diverges. Both
-together (which Thetis allows but Zeus won't) means RX and TX diverge in
-different directions. Either way, the single-number model has to grow into a
-two-number model. This is a wire-layer change with a small but real blast
-radius across `Zeus.Contracts`, `Zeus.Protocol1`, `Zeus.Protocol2`,
-`RadioService`, and the freq-correction PR #334.
+**Before this PR**, the wire format treated RX and TX freq as the same
+number. `ControlFrame.WriteCcBytes` (line 265) wrote `state.VfoAHz` to all
+five frequency registers. **This PR split** `CcState.VfoAHz` into
+`RxFreqAHz` + `TxFreqAHz`, and `WriteCcBytes` now routes `TxFreq` (0x02) to
+`TxFreqAHz` while the four RX registers use `RxFreqAHz`
+(`ControlFrame.cs:272-281`). `SetVfoAHz(long)` became `SetFreqs(long rxHz,
+long txHz)` on both protocol clients, and `RadioService.PushWireFreqs()`
+applies the RIT/XIT formula before calling `SetFreqs`.
 
 ### Why RIT separately from SPLIT
 
@@ -95,9 +90,9 @@ RIT and SPLIT serve overlapping use cases — both let the operator listen on
 one frequency and transmit on another — but they're mechanically different,
 and conflating them causes confusion in the codebase and the UI.
 
-- **RIT/XIT** = a small signed offset (typically ±9.999 kHz on commercial
-  rigs) added to one register. Use case: a caller is slightly off-frequency,
-  drift, fine alignment in pile-ups.
+- **RIT/XIT** = a small signed offset (±3 kHz in Zeus, ±9.999 on some
+  commercial rigs) added to one register. Use case: a caller is slightly
+  off-frequency, drift, fine alignment in pile-ups.
 - **SPLIT** = two independent VFOs (A and B), arbitrarily far apart. Use
   case: a DX station on 14.220 listening up 5–10 kHz at 14.225–14.230.
 
@@ -135,75 +130,79 @@ to the wire. We follow that pattern.
 
 ### Server-side state model
 
-`RadioService` grows three new fields (runtime only, never persisted to
-LiteDB):
+Three new fields on `StateDto` (`Zeus.Contracts/Dtos.cs:297-300`),
+runtime-only (not persisted to LiteDB):
 
 ```csharp
-private IncrementalTuningMode _itMode = IncrementalTuningMode.Off;
-private int _itRitHz;   // ±9999, preserved across cycle transitions
-private int _itXitHz;   // ±9999, preserved across cycle transitions
-
+// Zeus.Contracts/Dtos.cs
 public enum IncrementalTuningMode : byte { Off = 0, Rit = 1, Xit = 2 }
+
+// on StateDto (default Off / 0 / 0):
+IncrementalTuningMode ItMode,
+int RitOffsetHz,   // ±3000, preserved across cycle transitions
+int XitOffsetHz    // ±3000, preserved across cycle transitions
 ```
 
 The `enum` makes mutual exclusion structural — you cannot represent
 `RitOn && XitOn`. Three states, three states only.
 
+`RadioService.SetIncrementalTuning(mode, offsetHz)` (`RadioService.cs:685`)
+validates + clamps via `RitXitMath.ClampOffset` (`RitXitMath.cs:13`), then
+mutates state and calls `PushWireFreqs` to push the split frequencies to
+the protocol client.
+
 ### Effective wire-frequency formula
 
-The single load-bearing piece of math:
+The single load-bearing piece of math, implemented in
+`RadioService.PushWireFreqs` (`RadioService.cs:1748-1759`):
 
+```csharp
+// RadioService.PushWireFreqs(RxMode mode, long dialHz)
+ritDelta = (ItMode == Rit) ? RitOffsetHz : 0;
+xitDelta = (ItMode == Xit) ? XitOffsetHz : 0;
+rxWireHz = CwOffset.EffectiveLoHz(mode, dialHz + ritDelta);
+txWireHz = CwOffset.EffectiveLoHz(mode, dialHz + xitDelta);
+ActiveClient?.SetFreqs(rxWireHz, txWireHz);
 ```
-rxWireHz = dial + cwOffset(mode) + ritDelta
-txWireHz = dial + cwOffset(mode) + xitDelta
 
-ritDelta = (_itMode == Rit) ? _itRitHz : 0
-xitDelta = (_itMode == Xit) ? _itXitHz : 0
-cwOffset(CWU)   = −cwPitchHz   (≈ −600)
-cwOffset(CWL)   = +cwPitchHz   (≈ +600)
-cwOffset(other) = 0
-```
+Note: CwOffset is applied to `dial + delta`, not added after. This is
+correct: `EffectiveLoHz(CWU, f) = f − pitch`, so
+`EffectiveLoHz(CWU, dial + rit) = (dial + rit) − pitch`.
 
 Worked example: dial 14.050.000, CWU mode (pitch 600 Hz), RIT engaged at
 +250 Hz →
-- `rxWireHz = 14_050_000 − 600 + 250 = 14_049_650`
-- `txWireHz = 14_050_000 − 600 + 0   = 14_049_400` (XIT off, dial freq for TX)
+- `rxWireHz = EffectiveLoHz(CWU, 14_050_250) = 14_049_650`
+- `txWireHz = EffectiveLoHz(CWU, 14_050_000) = 14_049_400` (XIT off)
 
 The CwOffset baking is inherited from existing CW handling (`CwOffset.cs`).
 RIT/XIT layer on top.
 
 ### Wire-layer changes — the rename
 
-The single biggest invasive change in this PR. We rename one symbol along
-the entire path it touches:
+**Done.** The rename touched 21 files (74 occurrences). Summary:
 
-- `Zeus.Protocol1.ControlFrame.CcState.VfoAHz` →
-  splits into `RxFreqAHz` and `TxFreqAHz` (both `long`, signed for now to
-  match the existing field; clamped to `uint` range at the wire boundary).
-- `Zeus.Protocol1.Protocol1Client.SetVfoAHz(long)` →
-  becomes `SetVfos(long rxHz, long txHz)`. Underlying private fields
-  `_vfoAHz` becomes `_rxFreqHz` + `_txFreqHz`.
-- Same in `Zeus.Protocol2.Protocol2Client` (which already has `_rxFreqHz`
-  — adds `_txFreqHz` alongside).
-- `ControlFrame.WriteCcBytes` switch case at line 195 routes:
+- `CcState.VfoAHz` → `RxFreqAHz` + `TxFreqAHz` (`ControlFrame.cs:190-191`)
+- `WriteCcBytes` switch (`ControlFrame.cs:272-281`):
   ```csharp
+  case CcRegister.TxFreq:
+      BinaryPrimitives.WriteUInt32BigEndian(cc[1..5], (uint)state.TxFreqAHz);
+      break;
   case CcRegister.RxFreq:
   case CcRegister.RxFreq2:
   case CcRegister.RxFreq3:
   case CcRegister.RxFreq4:
-      writeBE32(state.RxFreqAHz);
-      break;
-  case CcRegister.TxFreq:
-      writeBE32(state.TxFreqAHz);
+      BinaryPrimitives.WriteUInt32BigEndian(cc[1..5], (uint)state.RxFreqAHz);
       break;
   ```
-- The frequency-correction factor (#325) applies separately to each field
-  inside the client's setter, mirroring the existing single-field logic.
-
-Backward compatibility: when nobody calls `SetRit*` / `SetXit*`, the
-orchestrator pushes `rxWireHz == txWireHz == dial + cwOffset(mode)`. Same
-bytes on the wire as before. No behavioral change for any radio that
-doesn't see RIT/XIT.
+- `IProtocol1Client.SetVfoAHz(long)` → `SetFreqs(long rxHz, long txHz)`
+  (`IProtocol1Client.cs:79`)
+- `Protocol1Client`: `_vfoAHz` → `_rxFreqAHz` + `_txFreqAHz`
+  (`Protocol1Client.cs:78-79`), freq correction applied independently
+  (`Protocol1Client.cs:544-551`)
+- `Protocol2Client.SetFreqs`: accepts `txHz` for API symmetry, not yet
+  wired to a separate P2 NCO (`Protocol2Client.cs:400-414`)
+- N2ADR OC mask uses `RxFreqAHz` (`ControlFrame.cs:470`) — BPF follows RX
+- Backward compat: when IT is Off, `rxWireHz == txWireHz`. Same wire bytes.
 
 ### REST endpoint
 
@@ -214,7 +213,7 @@ POST /api/rx/incremental-tuning
 Content-Type: application/json
 
 { "mode": "off" | "rit" | "xit",
-  "offsetHz": -9999..9999 }
+  "offsetHz": -3000..3000 }
 ```
 
 Whole-state set, not PATCH. The operator's edit (cycle a mode, dial an
@@ -232,36 +231,42 @@ via SignalR `StreamingHub` — the new fields ride along.
 
 ### Frontend UI surface
 
-Two new components, one existing component touched:
+Four new components, two existing components touched:
 
 **`IncrementalTuningButton.tsx`** (new — replaces `App.tsx:770` placeholder)
-- Renders as a single button in the transport bar.
+- Renders as a single button in the transport bar (`App.tsx:771`).
 - Single click cycles: OFF → RIT → XIT → OFF.
 - Label changes per state: dim "RIT/XIT" when OFF, lit "RIT" or "XIT" with
-  `--accent` border when active.
-- Position: same slot the current `<button>RIT</button>` placeholder
-  occupies. No new transport-bar real estate.
+  `accent` class when active.
 
 **`RitXitOffsetRow.tsx`** (new — sub-row under VfoDisplay)
-- Renders only when `mode != Off`.
-- Layout (monospace, faithful-to-HL2-aesthetic):
-  ```
-  [ RIT  ▼  +0250 Hz  ▲  Clr ]
-  ```
+- Renders only when `itMode != 'Off'` (`VfoDisplay.tsx:316`).
+- Layout: `[ RIT  ▼  +0250 Hz  ▲  Clr ]`
 - ▲ / ▼ spinners: increment / decrement by **filter-aware step** (10 Hz
   default, 5 Hz when current filter bandwidth ≤ 250 Hz — matches Thetis at
   console.cs:7624-7633).
-- Numeric display is click-to-edit: click → text input, Enter commits.
-- `Clr` button: zeros the active mode's offset AND exits the mode
-  (`_itMode = Off`). The inactive mode's offset is preserved. This is the
-  operator's "I'm done with this" gesture. Single click, no chord.
-- Debounced POSTs: 100 ms after the last ▲/▼ click so a held button doesn't
-  blast the endpoint.
+- `Clr` button: sends `{ mode: "Off", offsetHz: 0 }` → sub-row disappears.
+- Debounced POSTs: 100 ms after the last ▲/▼ click.
 
-**`VfoDisplay.tsx`** (modify)
-- Renders `<RitXitOffsetRow />` immediately below the main VFO numbers when
-  `ritEnabled || xitEnabled`. Otherwise, nothing — no permanent real
-  estate stolen.
+**`RitXitMarker.tsx`** (new — panadapter frequency indicator)
+- DOM overlay inside Panadapter container (`Panadapter.tsx:266`), same
+  coordinate system as `PassbandOverlay` (percentage of frequency span).
+- When RIT active: red (`--tx`) vertical line + "RX" label at `dial + ritOffset`.
+- When XIT active: red vertical line + "TX" label at `dial + xitOffset`.
+- Hidden when offset is 0 or IT mode is Off.
+- z-index 15 (same as dial marker), label with dark background for contrast.
+
+**`VfoDisplay.tsx`** (modified)
+- Imports and renders `<RitXitOffsetRow />` after the frequency hint
+  (`VfoDisplay.tsx:316`). The row conditionally renders itself.
+
+**`connection-store.ts`** (modified)
+- `itMode`, `ritOffsetHz`, `xitOffsetHz` fields added to `ConnectionState`
+  type, initial values, and `applyState` hydration.
+
+**`client.ts`** (modified)
+- `IncrementalTuningMode` type, `normalizeItMode`, fields on
+  `RadioStateDto`, `setIncrementalTuning()` API function.
 
 ### Auto-clear events
 
@@ -319,12 +324,12 @@ IncrementalTuningButton click
   → ZeusEndpoints → RadioService.SetIncrementalTuning(...)
        1. validate + clamp via RitXitMath
        2. _itMode := Rit, _itRitHz := offsetHz
-       3. compute rxWireHz, txWireHz (formula above)
-       4. ActiveClient.SetVfos(rxWireHz, txWireHz)
+       3. PushWireFreqs(mode, dialHz) computes rxWireHz, txWireHz
+       4. ActiveClient.SetFreqs(rxWireHz, txWireHz)
        5. Mutate snapshot, SignalR broadcast
-  → Protocol1Client.SetVfos
+  → Protocol1Client.SetFreqs
        6. apply freq-correction to each field
-       7. update _rxFreqHz, _txFreqHz
+       7. update _rxFreqAHz, _txFreqAHz
        8. rotation 4-phase carries new values on next tx packet (~3 ms)
   → Frontend store updates, RitXitOffsetRow appears
 ```
@@ -363,15 +368,14 @@ Same shape in `SetMode` and on disconnect.
 
 | Input | Behavior |
 |---|---|
-| `offsetHz` out of range (±50_000 etc.) | Silent clamp to ±9999. Response body carries the clamped value so frontend sees the truth. Info log: `api.rx.it.clamp from={raw} to={clamped}` |
+| `offsetHz` out of range (±50_000 etc.) | Silent clamp to ±3000. Response body carries the clamped value so frontend sees the truth. |
 | `offsetHz` not an integer / NaN | 400 Bad Request, no state change |
 | `mode` not in `{off, rit, xit}` | 400 Bad Request |
-| TCI `ZZRF+99999;` (would clamp to 9999) | Accept, clamp, store. Subsequent `ZZRF;` query returns the clamped form |
+| TCI `ZZRF+09999;` (would clamp to 3000) | Accept, clamp, store. Subsequent `ZZRF;` query returns the clamped form |
 | TCI command malformed | Ignored (matches Zeus's existing stub-permissive pattern) |
 
-Pure helper `Zeus.Server.Hosting.RitXitMath.ClampOffset(int hz)` centralises
-this; tested against
-`[-100000, -9999, 0, 9999, 100000] → [-9999, -9999, 0, 9999, 9999]`.
+Pure helper `Zeus.Server.Hosting.RitXitMath.ClampOffset(int hz)`
+(`RitXitMath.cs:13`) centralises this; `MaxOffsetHz = 3000`.
 
 ### Wire-layer failures
 
@@ -412,19 +416,19 @@ Frontend learns about the switch through the normal state broadcast.
 
 ## Testing strategy
 
-Six buckets — five automated, one manual, plus a light on-air pass:
+Six buckets — five automated, one manual, plus a light on-air pass.
+**Current totals: 1047 backend (210 P1 + 101 P2 + 736 Server) + 229
+frontend = 1276 tests, 0 failed.**
 
-### Pure unit tests (`Zeus.Server.Tests/RitXitMathTests.cs`)
+### Pure unit tests (`Zeus.Server.Tests/RitXitMathTests.cs`) — DONE
 
-Pattern lifted from `ZeroBeatAlgorithmTests`: static helpers, zero deps,
-trivially testable. Targets `ClampOffset(int)`, `FilterAwareStepHz(int)`,
-and any sign-handling math the orchestrator factors out. ~6–8 tests, runs
-in < 100 ms.
+16 parametric tests covering `ClampOffset` (±3000 clamp) and
+`FilterAwareStepHz` (10 Hz / 5 Hz threshold at 250 Hz BW).
 
-### Orchestrator tests (`Zeus.Server.Tests/RadioServiceRitXitTests.cs`)
+### Orchestrator tests (`Zeus.Server.Tests/RadioServiceRitXitTests.cs`) — DONE
 
-With a fake `IDspEngine` and a `Protocol1Client` stub that captures pushed
-freqs. Cases:
+10 tests exercising `RadioService` directly (same pattern as
+`RadioServiceSetRadioLoTests`). Cases:
 
 1. `SetIncrementalTuning(Rit, +250)` with dial 14_050_000, CWU, pitch 600
    → pushed `rxWireHz=14_049_650, txWireHz=14_049_400`.
@@ -438,9 +442,9 @@ freqs. Cases:
 7. MOX edge with `_itMode = Xit` → `_txFreqHz = dial + xit`, `_rxFreqHz =
    dial`. The two fields differ on the wire as expected.
 
-### Wire-layer tests (`Zeus.Protocol1.Tests/ControlFrameRitXitTests.cs`)
+### Wire-layer tests (`Zeus.Protocol1.Tests/ControlFrameRxTxSplitTests.cs`) — DONE
 
-Direct assertions on `WriteCcBytes` output bytes:
+4 tests. Direct assertions on `WriteCcBytes` output bytes:
 
 1. `state.RxFreqAHz = X, state.TxFreqAHz = Y, register = RxFreq` → BE32
    payload = `X`.
@@ -537,14 +541,10 @@ when its turn comes.
   today. Hardcoded defaults in this PR (Shift+ArrowUp/Down for step,
   Shift+Backspace for Clear). When a hotkey-prefs panel lands, RIT/XIT
   hotkeys join it.
-- **Panadapter dual-marker for RIT/XIT visualisation.** A real UX question:
-  with RIT engaged the operator hears `vfo + rit` but the panadapter shows
-  one frequency. Operators in split / pile-up situations expect visual
-  feedback for the two frequencies (RX and TX). Markers, labels, distinct
-  highlights — this is Brian's territory (UI owner, `--accent` token
-  discipline). Out of scope here; this PR exposes the data
-  (`effectiveRxWireHz` / `effectiveTxWireHz` in the state snapshot) so
-  Brian's future PR has everything it needs without protocol changes.
+- **~~Panadapter dual-marker for RIT/XIT visualisation.~~** DONE —
+  `RitXitMarker.tsx` renders a red (`--tx`) vertical line with "RX" or "TX"
+  label on the panadapter at the offset frequency. DOM overlay, same
+  coordinate system as `PassbandOverlay`.
 - **`Esc` global hotkey and `×` inline reset.** Provisional alternatives
   to the on-row `Clr` button. Skipped from v1; on-air smoke may surface
   the need.
@@ -554,19 +554,12 @@ when its turn comes.
 This section is the "design notes" we'd quote in the PR description to
 Doug. Each item is a judgement call we made; happy to revise on his read.
 
-1. **Rename `VfoAHz` → `RxFreqAHz` + `TxFreqAHz` everywhere.** The
-   alternative is keeping `VfoAHz` and adding a parallel `TxVfoAHz`. The
-   rename matches the wire model (RX and TX really are different fields
-   now) and the `ControlFrame.cs:200-205` comment invites it. The cost is
-   a wide but mechanical sed across `Zeus.Contracts`, both protocol
-   clients, RadioService, and a handful of tests. If you'd rather keep
-   `VfoAHz` as the RX-VFO name and add a sibling, say the word.
+1. **~~Rename `VfoAHz` → `RxFreqAHz` + `TxFreqAHz` everywhere.~~**
+   RESOLVED — done. 21 files, 74 occurrences renamed.
 
-2. **`SetVfoAHz(long)` → `SetVfos(long rxHz, long txHz)`.** Same shape
-   of question. Could stay as `SetVfoAHz` (RX side) + new `SetTxVfoAHz`
-   for symmetry, or you might prefer keeping a single setter that takes
-   both. We picked the combined setter to make the call sites push both
-   atomically — no half-state where RX is updated but TX isn't yet.
+2. **~~`SetVfoAHz(long)` → `SetFreqs(long rxHz, long txHz)`.~~**
+   RESOLVED — done. Combined setter, both freqs pushed atomically.
+   5 call sites updated (4 in RadioService, 1 in DspPipelineService).
 
 3. **REST replace-semantics, not PATCH.** The endpoint takes
    `{ mode, offsetHz }` as one indivisible state. We considered separate
@@ -623,10 +616,15 @@ Doug. Each item is a judgement call we made; happy to revise on his read.
   `btnRITReset_Click` (the canonical "clear value + turn off"),
   `console.Designer.cs:2522-2531` for the original ±99.999 kHz range,
   `CATCommands.cs:5904+` for the ZZRF wire format.
-- **Range choice**: ±9.999 kHz (commercial-rig style), narrower than
-  Thetis's ±99.999. Beyond this range, Zeus will provide SPLIT (separate
-  PR). Stated assumption: an operator dialling beyond ±10 kHz really
-  wants SPLIT, not RIT.
+- **Range choice**: ±3 kHz — tighter than the original ±9.999 kHz draft
+  and far narrower than Thetis's ±99.999. Beyond ±3 kHz, the operator
+  really wants SPLIT (issue #96, separate PR). `RitXitMath.MaxOffsetHz`
+  is a single constant to adjust if operator feedback surfaces the need.
+- **Upstream SPLIT VFO**: issue
+  [#96](https://github.com/Kb2uka/openhpsdr-zeus/issues/96) (open, P3,
+  by Brian). The `RxFreqAHz` + `TxFreqAHz` wire rename is the substrate
+  that #96 will build on — SPLIT just means `TxFreqAHz` can diverge
+  arbitrarily from `RxFreqAHz`, not just by ±3 kHz.
 - **Step choice**: 10 Hz default, 5 Hz when current filter bandwidth ≤
   250 Hz. Lifted verbatim from Thetis. Provisional pending on-air.
 - **Cycle-button UX precedent**: not Thetis (which has two independent
