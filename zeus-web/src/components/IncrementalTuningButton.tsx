@@ -38,6 +38,7 @@ export function IncrementalTuningButton() {
       onClick={cycle}
       title="Cycle: Off → RIT → XIT → Off"
     >
+      <span className={`led${active ? ' on' : ''}`} style={{ marginRight: 6 }} />
       {label}
     </button>
   );

@@ -863,11 +863,9 @@ public class DspPipelineService : BackgroundService,
         engine.SetTxMode(s.Mode);
         engine.SetFilter(channelId, s.FilterLowHz, s.FilterHighHz);
         engine.SetTxFilter(s.TxFilterLowHz, s.TxFilterHighHz);
-        engine.SetVfoHz(channelId, s.VfoHz);
-        // Replay the WDSP shift on fresh-channel open so a connect landing
-        // with VfoHz != RadioLoHz (persisted across restart) is demodulating
-        // the same dial the operator saw last session.
-        // See docs/prd/panfall_behavior.md.
+        var (initRxWire, _) = RitXitMath.WireFreqs(
+            s.Mode, s.VfoHz, s.ItMode, s.RitOffsetHz, s.XitOffsetHz);
+        engine.SetVfoHz(channelId, (long)initRxWire);
         int ctunShiftHz = (int)(CwOffset.EffectiveLoHz(s.Mode, s.VfoHz) - s.RadioLoHz);
         engine.SetCtunShift(channelId, ctunShiftHz);
         double effectiveAgc = s.AgcTopDb + s.AgcOffsetDb;
@@ -1474,7 +1472,9 @@ public class DspPipelineService : BackgroundService,
         // real-radio data, so suppressing it unconditionally is correct.
         if (engine is SyntheticDspEngine) return;
 
-        engine.SetVfoHz(channel, state.VfoHz);
+        var (rxWire, _) = RitXitMath.WireFreqs(
+            state.Mode, state.VfoHz, state.ItMode, state.RitOffsetHz, state.XitOffsetHz);
+        engine.SetVfoHz(channel, (long)rxWire);
 
         // perf3 iter4: skip the entire display pipeline when no client is
         // subscribed. Saves: 2× engine.TryGet*DisplayPixels P/Invoke per tick
@@ -1567,12 +1567,12 @@ public class DspPipelineService : BackgroundService,
             // extra contract field needed, per task #7 scope note.
             int zoomLevel = Math.Max(1, state.ZoomLevel);
             float hzPerPixel = (float)((double)sampleRate / zoomLevel / Width);
-            // Panadapter centre = the radio's actual NCO. The hardware is
-            // always frozen at RadioLoHz while the dial roams, so the
-            // pan/waterfall stay anchored to RadioLoHz and don't slide under
-            // the operator when only VfoHz moves.
-            // See docs/prd/panfall_behavior.md.
-            long centerHz = state.RadioLoHz;
+            // Panadapter centre = the RX wire frequency (includes RIT when
+            // active). WDSP's analyzer processes IQ from the hardware NCO
+            // which sits at rxWire, so the FFT data is centred there. The
+            // display must match so signals, passband overlay, and audio
+            // stay in the same coordinate frame.
+            long centerHz = rxWire;
 
             // Cache for the frequency-calibration service (issue #325). The
             // cal reads from this cache to avoid racing for WDSP's "fresh
