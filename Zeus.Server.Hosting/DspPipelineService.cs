@@ -516,7 +516,7 @@ public class DspPipelineService : BackgroundService,
     private void OnRadioStateChanged(StateDto s)
     {
         // Forward VFO changes to the P2 client when it's active. RadioService
-        // does this for P1 via ActiveClient?.SetVfoAHz() inside SetVfo, but
+        // does this for P1 via ActiveClient?.SetFreqs() inside SetVfo, but
         // ActiveClient is null for P2 connections, so the radio never learns
         // about tune changes without this forward. Sample rate / mode follow
         // here too when P2-side support is added.
@@ -526,7 +526,7 @@ public class DspPipelineService : BackgroundService,
         // RadioLoHz to the P2 client (the P1 client gets the same push from
         // RadioService.SetRadioLo). See docs/prd/panfall_behavior.md.
         var p2 = _p2Client;
-        p2?.SetVfoAHz(s.RadioLoHz);
+        p2?.SetFreqs(s.RadioLoHz, s.RadioLoHz);
 
         // iter5 pass-2: lock-free engine pointer read. The lock previously
         // here only provided pointer atomicity (the engine.* calls below

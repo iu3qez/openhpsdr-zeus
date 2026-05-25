@@ -505,10 +505,10 @@ public sealed class RadioService : IDisposable
             // Retune the radio to the persisted hardware NCO (RadioLoHz). The
             // dial (VfoHz) may sit elsewhere; WDSP's shift stage covers the
             // gap. Hydration above already guarantees RadioLoHz != 0 by
-            // snapping to VfoHz on legacy rows, so a plain SetVfoAHz here is
+            // snapping to VfoHz on legacy rows, so a plain SetFreqs here is
             // always valid. See docs/prd/panfall_behavior.md.
             var connectSnap = Snapshot();
-            client.SetVfoAHz(connectSnap.RadioLoHz);
+            client.SetFreqs(connectSnap.RadioLoHz, connectSnap.RadioLoHz);
 
             // Default-on the N2ADR 7-relay filter board for HL2 — mirrors
             // Thetis's HERCULES preset (setup.cs:14642). Most HL2 deployments
@@ -646,7 +646,7 @@ public sealed class RadioService : IDisposable
         _ = fromExternal;
         long radioLoNew = CwOffset.EffectiveLoHz(currentMode, clamped);
         Mutate(s => s with { VfoHz = clamped, RadioLoHz = radioLoNew });
-        ActiveClient?.SetVfoAHz(radioLoNew);
+        PushWireFreqs(currentMode, clamped);
         // Band edge crossed? Per-band PA gain / OC bits may have swapped — push
         // the new snapshot before the next TX frame ships. Cheap when no
         // crossing occurred (same bytes re-pushed).
@@ -663,7 +663,7 @@ public sealed class RadioService : IDisposable
     /// VfoHz untouched. Returns the updated <see cref="StateDto"/>.
     /// Out-of-range values are clamped to [0, 60_000_000]; callers wanting
     /// strict rejection should validate before calling. Triggers a P1 client
-    /// SetVfoAHz (and the P2 path via DspPipelineService.OnRadioStateChanged
+    /// SetFreqs (and the P2 path via DspPipelineService.OnRadioStateChanged
     /// reading the new RadioLoHz), and a PA recompute if the LO crossed a
     /// band edge. WDSP's shift stage is updated by DspPipelineService so the
     /// dial-relative demodulation remains correct.
@@ -674,7 +674,7 @@ public sealed class RadioService : IDisposable
         long previous;
         lock (_sync) { previous = _state.RadioLoHz; }
         Mutate(s => s with { RadioLoHz = clamped });
-        ActiveClient?.SetVfoAHz(clamped);
+        ActiveClient?.SetFreqs(clamped, clamped);
         if (BandUtils.FreqToBand(previous) != BandUtils.FreqToBand(clamped))
         {
             RecomputePaAndPush();
@@ -685,12 +685,20 @@ public sealed class RadioService : IDisposable
     public StateDto SetIncrementalTuning(IncrementalTuningMode mode, int offsetHz)
     {
         int clamped = RitXitMath.ClampOffset(offsetHz);
+        long vfo;
+        RxMode rxMode;
+        lock (_sync)
+        {
+            vfo = _state.VfoHz;
+            rxMode = _state.Mode;
+        }
         Mutate(s => mode switch
         {
             IncrementalTuningMode.Rit => s with { ItMode = mode, RitOffsetHz = clamped },
             IncrementalTuningMode.Xit => s with { ItMode = mode, XitOffsetHz = clamped },
             _ => s with { ItMode = IncrementalTuningMode.Off, RitOffsetHz = 0, XitOffsetHz = 0 },
         });
+        PushWireFreqs(rxMode, vfo);
         return Snapshot();
     }
 
@@ -823,7 +831,9 @@ public sealed class RadioService : IDisposable
         // into/out of CW changes EffectiveLoHz by ±cw_pitch and the radio
         // needs the new tuning before the next IQ block arrives. P2 is
         // pushed via DspPipelineService.OnRadioStateChanged.
-        ActiveClient?.SetVfoAHz(CwOffset.EffectiveLoHz(mode, newVfoHz));
+        // IT was cleared in the Mutate above, so both freqs are identical.
+        long lo = CwOffset.EffectiveLoHz(mode, newVfoHz);
+        ActiveClient?.SetFreqs(lo, lo);
 
         return Snapshot();
     }
@@ -1734,6 +1744,19 @@ public sealed class RadioService : IDisposable
 
     private void ClearIncrementalTuning() =>
         Mutate(s => s with { ItMode = IncrementalTuningMode.Off, RitOffsetHz = 0, XitOffsetHz = 0 });
+
+    private void PushWireFreqs(RxMode mode, long dialHz)
+    {
+        int ritDelta, xitDelta;
+        lock (_sync)
+        {
+            ritDelta = _state.ItMode == IncrementalTuningMode.Rit ? _state.RitOffsetHz : 0;
+            xitDelta = _state.ItMode == IncrementalTuningMode.Xit ? _state.XitOffsetHz : 0;
+        }
+        long rxWireHz = CwOffset.EffectiveLoHz(mode, dialHz + ritDelta);
+        long txWireHz = CwOffset.EffectiveLoHz(mode, dialHz + xitDelta);
+        ActiveClient?.SetFreqs(rxWireHz, txWireHz);
+    }
 
     private void Mutate(Func<StateDto, StateDto> fn)
     {

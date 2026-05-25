@@ -2,7 +2,8 @@
 //
 // Zeus — OpenHPSDR Protocol-1 / Protocol-2 client.
 // Copyright (C) 2025-2026 Brian Keating (EI6LF),
-//                         Douglas J. Cerrato (KB2UKA), and contributors.
+//                         Douglas J. Cerrato (KB2UKA),
+//                         Simone Fabris (IU3QEZ), and contributors.
 
 import { useCallback, useRef } from 'react';
 import { setIncrementalTuning } from '../api/client';

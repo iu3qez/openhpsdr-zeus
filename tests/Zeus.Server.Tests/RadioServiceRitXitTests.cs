@@ -2,7 +2,8 @@
 //
 // Zeus — OpenHPSDR Protocol-1 / Protocol-2 client.
 // Copyright (C) 2025-2026 Brian Keating (EI6LF),
-//                         Douglas J. Cerrato (KB2UKA), and contributors.
+//                         Douglas J. Cerrato (KB2UKA),
+//                         Simone Fabris (IU3QEZ), and contributors.
 //
 // See ATTRIBUTIONS.md at the repository root for the full provenance
 // statement and per-component attribution.
@@ -94,7 +95,7 @@ public sealed class RadioServiceRitXitTests : IDisposable
     {
         using var radio = BuildRadio();
         var snap = radio.SetIncrementalTuning(IncrementalTuningMode.Rit, 50_000);
-        Assert.Equal(9999, snap.RitOffsetHz);
+        Assert.Equal(3000, snap.RitOffsetHz);
     }
 
     [Fact]
@@ -102,7 +103,7 @@ public sealed class RadioServiceRitXitTests : IDisposable
     {
         using var radio = BuildRadio();
         var snap = radio.SetIncrementalTuning(IncrementalTuningMode.Xit, -50_000);
-        Assert.Equal(-9999, snap.XitOffsetHz);
+        Assert.Equal(-3000, snap.XitOffsetHz);
     }
 
     // ---- Auto-clear on mode change ----

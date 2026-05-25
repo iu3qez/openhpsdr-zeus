@@ -2,7 +2,8 @@
 //
 // Zeus — OpenHPSDR Protocol-1 / Protocol-2 client.
 // Copyright (C) 2025-2026 Brian Keating (EI6LF),
-//                         Douglas J. Cerrato (KB2UKA), and contributors.
+//                         Douglas J. Cerrato (KB2UKA),
+//                         Simone Fabris (IU3QEZ), and contributors.
 
 using Zeus.Server;
 
@@ -12,15 +13,15 @@ public class RitXitMathTests
 {
     [Theory]
     [InlineData(0, 0)]
-    [InlineData(5000, 5000)]
-    [InlineData(-5000, -5000)]
-    [InlineData(9999, 9999)]
-    [InlineData(-9999, -9999)]
-    [InlineData(10000, 9999)]
-    [InlineData(-10000, -9999)]
-    [InlineData(100000, 9999)]
-    [InlineData(-100000, -9999)]
-    public void ClampOffset_clamps_to_9999(int input, int expected)
+    [InlineData(2000, 2000)]
+    [InlineData(-2000, -2000)]
+    [InlineData(3000, 3000)]
+    [InlineData(-3000, -3000)]
+    [InlineData(3001, 3000)]
+    [InlineData(-3001, -3000)]
+    [InlineData(50000, 3000)]
+    [InlineData(-50000, -3000)]
+    public void ClampOffset_clamps_to_max(int input, int expected)
     {
         Assert.Equal(expected, RitXitMath.ClampOffset(input));
     }
