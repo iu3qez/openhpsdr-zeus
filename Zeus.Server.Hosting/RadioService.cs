@@ -592,6 +592,9 @@ public sealed class RadioService : IDisposable
             Endpoint = null,
             AttOffsetDb = 0,
             AdcOverloadWarning = false,
+            ItMode = IncrementalTuningMode.Off,
+            RitOffsetHz = 0,
+            XitOffsetHz = 0,
         });
         // Drop the PS board key — any SetPsAdvanced call between now and the
         // next connect (e.g. operator dialling in the panel while
@@ -650,6 +653,7 @@ public sealed class RadioService : IDisposable
         if (BandUtils.FreqToBand(previous) != BandUtils.FreqToBand(clamped))
         {
             RecomputePaAndPush();
+            ClearIncrementalTuning();
         }
         return Snapshot();
     }
@@ -675,6 +679,18 @@ public sealed class RadioService : IDisposable
         {
             RecomputePaAndPush();
         }
+        return Snapshot();
+    }
+
+    public StateDto SetIncrementalTuning(IncrementalTuningMode mode, int offsetHz)
+    {
+        int clamped = RitXitMath.ClampOffset(offsetHz);
+        Mutate(s => mode switch
+        {
+            IncrementalTuningMode.Rit => s with { ItMode = mode, RitOffsetHz = clamped },
+            IncrementalTuningMode.Xit => s with { ItMode = mode, XitOffsetHz = clamped },
+            _ => s with { ItMode = IncrementalTuningMode.Off, RitOffsetHz = 0, XitOffsetHz = 0 },
+        });
         return Snapshot();
     }
 
@@ -793,6 +809,9 @@ public sealed class RadioService : IDisposable
                 FilterLowHz = lo, FilterHighHz = hi,
                 TxFilterLowHz = txLo, TxFilterHighHz = txHi,
                 FilterPresetName = restoredPreset,
+                ItMode = IncrementalTuningMode.Off,
+                RitOffsetHz = 0,
+                XitOffsetHz = 0,
             };
         });
 
@@ -1712,6 +1731,9 @@ public sealed class RadioService : IDisposable
         _stateDirty = true;
         FlushState();
     }
+
+    private void ClearIncrementalTuning() =>
+        Mutate(s => s with { ItMode = IncrementalTuningMode.Off, RitOffsetHz = 0, XitOffsetHz = 0 });
 
     private void Mutate(Func<StateDto, StateDto> fn)
     {
