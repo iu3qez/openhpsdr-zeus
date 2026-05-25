@@ -716,6 +716,7 @@ export function setRadioLo(
 export function setIncrementalTuning(
   mode: IncrementalTuningMode,
   offsetHz: number,
+  clear?: boolean,
   signal?: AbortSignal,
 ): Promise<RadioStateDto> {
   return jsonFetch(
@@ -723,7 +724,7 @@ export function setIncrementalTuning(
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ mode: IT_MODES.indexOf(mode), offsetHz }),
+      body: JSON.stringify({ mode: IT_MODES.indexOf(mode), offsetHz, clear: clear ?? false }),
       signal,
     },
     normalizeState,

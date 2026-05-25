@@ -61,31 +61,52 @@ public sealed class RadioServiceRitXitTests : IDisposable
     }
 
     [Fact]
-    public void SetIncrementalTuning_Off_ClearsActiveOffset()
+    public void SetIncrementalTuning_Off_PreservesOffsets()
     {
         using var radio = BuildRadio();
         radio.SetIncrementalTuning(IncrementalTuningMode.Rit, 250);
         var snap = radio.SetIncrementalTuning(IncrementalTuningMode.Off, 0);
         Assert.Equal(IncrementalTuningMode.Off, snap.ItMode);
-        Assert.Equal(0, snap.RitOffsetHz);
+        Assert.Equal(250, snap.RitOffsetHz);
     }
 
-    // ---- Cycle preserves inactive offset ----
+    // ---- clear flag zeroes only the departing mode ----
 
     [Fact]
-    public void Cycle_Rit_Xit_PreservesRitOffset()
+    public void Clear_From_Rit_ZerosRitOnly()
     {
         using var radio = BuildRadio();
         radio.SetIncrementalTuning(IncrementalTuningMode.Rit, 250);
-        radio.SetIncrementalTuning(IncrementalTuningMode.Xit, 500);
-        // RIT offset was preserved, XIT is active
-        var snap = radio.SetIncrementalTuning(IncrementalTuningMode.Rit, 0);
-        // Re-entering RIT: the 0 means "use existing" is wrong — the caller
-        // passes the desired offset. But the *previous* RIT value was stored
-        // internally. Let's verify the XIT offset survived the transition.
-        snap = radio.SetIncrementalTuning(IncrementalTuningMode.Xit, 0);
-        // XIT offset should be retrievable as 500 from the last set
-        Assert.Equal(IncrementalTuningMode.Xit, snap.ItMode);
+        radio.SetIncrementalTuning(IncrementalTuningMode.Xit, -300);
+        radio.SetIncrementalTuning(IncrementalTuningMode.Rit, 250);
+        var snap = radio.SetIncrementalTuning(IncrementalTuningMode.Off, 0, clear: true);
+        Assert.Equal(IncrementalTuningMode.Off, snap.ItMode);
+        Assert.Equal(0, snap.RitOffsetHz);
+        Assert.Equal(-300, snap.XitOffsetHz);
+    }
+
+    [Fact]
+    public void Clear_From_Xit_ZerosXitOnly()
+    {
+        using var radio = BuildRadio();
+        radio.SetIncrementalTuning(IncrementalTuningMode.Xit, -300);
+        var snap = radio.SetIncrementalTuning(IncrementalTuningMode.Off, 0, clear: true);
+        Assert.Equal(IncrementalTuningMode.Off, snap.ItMode);
+        Assert.Equal(0, snap.XitOffsetHz);
+    }
+
+    // ---- Cycle preserves both offsets ----
+
+    [Fact]
+    public void Cycle_Rit_Xit_Off_Rit_PreservesOffsets()
+    {
+        using var radio = BuildRadio();
+        radio.SetIncrementalTuning(IncrementalTuningMode.Rit, 250);
+        radio.SetIncrementalTuning(IncrementalTuningMode.Xit, -300);
+        radio.SetIncrementalTuning(IncrementalTuningMode.Off, 0);
+        var snap = radio.SetIncrementalTuning(IncrementalTuningMode.Rit, 250);
+        Assert.Equal(250, snap.RitOffsetHz);
+        Assert.Equal(-300, snap.XitOffsetHz);
     }
 
     // ---- Clamp ----

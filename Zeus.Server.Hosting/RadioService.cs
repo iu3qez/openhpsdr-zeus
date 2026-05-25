@@ -635,10 +635,11 @@ public sealed class RadioService : IDisposable
         }
         // Classic "radio follows the dial" tuning. The CTUN frozen-NCO model
         // (#470) was reverted: it pinned the hardware NCO at the panadapter
-        // centre and offset RX in WDSP, but neither protocol client has a
-        // separate TX VFO (ControlFrame writes one VfoAHz to every freq
-        // register), so TX transmitted on the frozen centre instead of the
-        // dial. Every tune now retunes the radio so RX *and* TX track the dial;
+        // centre and offset RX in WDSP, but the protocol clients had no
+        // separate TX VFO, so TX transmitted on the frozen centre instead of
+        // the dial. The RIT/XIT wire-split (RxFreqAHz + TxFreqAHz) now
+        // enables independent RX/TX frequencies; PushWireFreqs applies IT
+        // offsets. Every tune retunes the radio so RX *and* TX track the dial;
         // RadioLoHz follows the dial's effective LO (CW: dial ∓ pitch), which
         // leaves the WDSP CTUN-shift stage at zero. The fromExternal flag is
         // kept for API compatibility but no longer changes behaviour — all
@@ -674,6 +675,9 @@ public sealed class RadioService : IDisposable
         long previous;
         lock (_sync) { previous = _state.RadioLoHz; }
         Mutate(s => s with { RadioLoHz = clamped });
+        // Bypass PushWireFreqs intentionally: this is a low-level NCO setter
+        // (AlignLoForCwTx, direct REST override), not a VFO tune. IT offsets
+        // are not applied — callers know exactly what Hz they want on the wire.
         ActiveClient?.SetFreqs(clamped, clamped);
         if (BandUtils.FreqToBand(previous) != BandUtils.FreqToBand(clamped))
         {
@@ -682,7 +686,7 @@ public sealed class RadioService : IDisposable
         return Snapshot();
     }
 
-    public StateDto SetIncrementalTuning(IncrementalTuningMode mode, int offsetHz)
+    public StateDto SetIncrementalTuning(IncrementalTuningMode mode, int offsetHz, bool clear = false)
     {
         int clamped = RitXitMath.ClampOffset(offsetHz);
         long vfo;
@@ -696,7 +700,13 @@ public sealed class RadioService : IDisposable
         {
             IncrementalTuningMode.Rit => s with { ItMode = mode, RitOffsetHz = clamped },
             IncrementalTuningMode.Xit => s with { ItMode = mode, XitOffsetHz = clamped },
-            _ => s with { ItMode = IncrementalTuningMode.Off, RitOffsetHz = 0, XitOffsetHz = 0 },
+            _ when clear => s.ItMode switch
+            {
+                IncrementalTuningMode.Rit => s with { ItMode = IncrementalTuningMode.Off, RitOffsetHz = 0 },
+                IncrementalTuningMode.Xit => s with { ItMode = IncrementalTuningMode.Off, XitOffsetHz = 0 },
+                _ => s with { ItMode = IncrementalTuningMode.Off },
+            },
+            _ => s with { ItMode = IncrementalTuningMode.Off },
         });
         PushWireFreqs(rxMode, vfo);
         return Snapshot();
@@ -1747,15 +1757,16 @@ public sealed class RadioService : IDisposable
 
     private void PushWireFreqs(RxMode mode, long dialHz)
     {
-        int ritDelta, xitDelta;
+        IncrementalTuningMode itMode;
+        int ritHz, xitHz;
         lock (_sync)
         {
-            ritDelta = _state.ItMode == IncrementalTuningMode.Rit ? _state.RitOffsetHz : 0;
-            xitDelta = _state.ItMode == IncrementalTuningMode.Xit ? _state.XitOffsetHz : 0;
+            itMode = _state.ItMode;
+            ritHz = _state.RitOffsetHz;
+            xitHz = _state.XitOffsetHz;
         }
-        long rxWireHz = CwOffset.EffectiveLoHz(mode, dialHz + ritDelta);
-        long txWireHz = CwOffset.EffectiveLoHz(mode, dialHz + xitDelta);
-        ActiveClient?.SetFreqs(rxWireHz, txWireHz);
+        var (rx, tx) = RitXitMath.WireFreqs(mode, dialHz, itMode, ritHz, xitHz);
+        ActiveClient?.SetFreqs(rx, tx);
     }
 
     private void Mutate(Func<StateDto, StateDto> fn)

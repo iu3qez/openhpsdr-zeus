@@ -324,8 +324,8 @@ public static class ZeusEndpoints
         app.MapPost("/api/rx/incremental-tuning",
             (IncrementalTuningSetRequest req, RadioService r) =>
         {
-            log.LogInformation("api.rx.it mode={Mode} offset={Hz}", req.Mode, req.OffsetHz);
-            return Results.Ok(r.SetIncrementalTuning(req.Mode, req.OffsetHz));
+            log.LogInformation("api.rx.it mode={Mode} offset={Hz} clear={Clear}", req.Mode, req.OffsetHz, req.Clear);
+            return Results.Ok(r.SetIncrementalTuning(req.Mode, req.OffsetHz, req.Clear));
         });
 
         app.MapPost("/api/mode", (ModeSetRequest req, RadioService r) =>

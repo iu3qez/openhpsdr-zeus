@@ -22,7 +22,7 @@ export function IncrementalTuningButton() {
 
   const cycle = useCallback(() => {
     const idx = CYCLE.indexOf(itMode);
-    const next = CYCLE[(idx + 1) % CYCLE.length];
+    const next = CYCLE[(idx + 1) % CYCLE.length] ?? 'Off';
     const offset =
       next === 'Rit' ? ritOffsetHz : next === 'Xit' ? xitOffsetHz : 0;
     setIncrementalTuning(next, offset).then(applyState).catch(() => {});

@@ -409,7 +409,7 @@ public sealed record ZoomSetRequest(int Level);
 
 public sealed record AutoAttSetRequest(bool Enabled);
 
-public sealed record IncrementalTuningSetRequest(IncrementalTuningMode Mode, int OffsetHz);
+public sealed record IncrementalTuningSetRequest(IncrementalTuningMode Mode, int OffsetHz, bool Clear = false);
 
 public sealed record AutoAgcSetRequest(bool Enabled);
 

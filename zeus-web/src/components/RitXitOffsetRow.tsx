@@ -6,7 +6,10 @@
 //                         Simone Fabris (IU3QEZ), and contributors.
 
 import { useCallback, useRef } from 'react';
-import { setIncrementalTuning } from '../api/client';
+import {
+  setIncrementalTuning,
+  type IncrementalTuningMode,
+} from '../api/client';
 import { useConnectionStore } from '../state/connection-store';
 
 const DEBOUNCE_MS = 100;
@@ -19,46 +22,49 @@ export function RitXitOffsetRow() {
   const itMode = useConnectionStore((s) => s.itMode);
   const ritOffsetHz = useConnectionStore((s) => s.ritOffsetHz);
   const xitOffsetHz = useConnectionStore((s) => s.xitOffsetHz);
-  const filterLowHz = useConnectionStore((s) => s.filterLowHz);
-  const filterHighHz = useConnectionStore((s) => s.filterHighHz);
   const applyState = useConnectionStore((s) => s.applyState);
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  if (itMode === 'Off') return null;
-
-  const offset = itMode === 'Rit' ? ritOffsetHz : xitOffsetHz;
-  const bw = Math.abs(filterHighHz - filterLowHz);
-  const step = filterAwareStep(bw);
-
   const post = useCallback(
-    (newOffset: number) => {
+    (mode: IncrementalTuningMode, newOffset: number) => {
       if (timer.current != null) clearTimeout(timer.current);
       timer.current = setTimeout(() => {
         timer.current = null;
-        setIncrementalTuning(itMode, newOffset)
+        setIncrementalTuning(mode, newOffset)
           .then(applyState)
           .catch(() => {});
       }, DEBOUNCE_MS);
     },
-    [itMode, applyState],
+    [applyState],
   );
 
   const nudge = useCallback(
     (dir: 1 | -1) => {
-      const next = offset + dir * step;
+      const s = useConnectionStore.getState();
+      const mode = s.itMode;
+      const curOffset = mode === 'Rit' ? s.ritOffsetHz : s.xitOffsetHz;
+      const bw = Math.abs(s.filterHighHz - s.filterLowHz);
+      const stp = filterAwareStep(bw);
+      const next = Math.max(-3000, Math.min(3000, curOffset + dir * stp));
       useConnectionStore.setState(
-        itMode === 'Rit' ? { ritOffsetHz: next } : { xitOffsetHz: next },
+        mode === 'Rit' ? { ritOffsetHz: next } : { xitOffsetHz: next },
       );
-      post(next);
+      post(mode, next);
     },
-    [offset, step, itMode, post],
+    [post],
   );
 
   const clear = useCallback(() => {
-    setIncrementalTuning('Off', 0).then(applyState).catch(() => {});
+    setIncrementalTuning('Off', 0, true).then(applyState).catch(() => {});
   }, [applyState]);
 
+  if (itMode === 'Off') return null;
+
+  const offset = itMode === 'Rit' ? ritOffsetHz : xitOffsetHz;
+  const { filterLowHz, filterHighHz } = useConnectionStore.getState();
+  const bw = Math.abs(filterHighHz - filterLowHz);
+  const step = filterAwareStep(bw);
   const sign = offset >= 0 ? '+' : '';
 
   return (

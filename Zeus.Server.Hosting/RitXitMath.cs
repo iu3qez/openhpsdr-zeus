@@ -5,6 +5,8 @@
 //                         Douglas J. Cerrato (KB2UKA),
 //                         Simone Fabris (IU3QEZ), and contributors.
 
+using Zeus.Contracts;
+
 namespace Zeus.Server;
 
 internal static class RitXitMath
@@ -16,4 +18,14 @@ internal static class RitXitMath
 
     public static int FilterAwareStepHz(int filterBandwidthHz) =>
         filterBandwidthHz <= 250 ? 5 : 10;
+
+    public static (long RxHz, long TxHz) WireFreqs(RxMode mode, long dialHz,
+        IncrementalTuningMode itMode, int ritOffsetHz, int xitOffsetHz)
+    {
+        int ritDelta = itMode == IncrementalTuningMode.Rit ? ritOffsetHz : 0;
+        int xitDelta = itMode == IncrementalTuningMode.Xit ? xitOffsetHz : 0;
+        return (
+            CwOffset.EffectiveLoHz(mode, dialHz + ritDelta),
+            CwOffset.EffectiveLoHz(mode, dialHz + xitDelta));
+    }
 }

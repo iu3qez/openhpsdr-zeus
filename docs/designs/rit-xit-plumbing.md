@@ -4,7 +4,7 @@
 then maintainer review. Wire rename, backend, frontend, and panadapter
 marker are all landed; TCI handlers are still stubs (follow-up PR).
 **Date:** 2026-05-16 (revised 2026-05-25 — implementation complete).
-**Author:** Simone Fabris (IU3QEZ), with Claude.
+**Author:** Simone Fabris (IU3QEZ).
 **Upstream issue:** relates to #96 (Split VFO) — the `RxFreqAHz` +
 `TxFreqAHz` wire rename is the substrate that #96 will build on.
 **Branch:** `claude/kind-keller-hygeb` on `iu3qez/openhpsdr-zeus`.

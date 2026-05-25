@@ -526,7 +526,8 @@ public class DspPipelineService : BackgroundService,
         // RadioLoHz to the P2 client (the P1 client gets the same push from
         // RadioService.SetRadioLo). See docs/prd/panfall_behavior.md.
         var p2 = _p2Client;
-        p2?.SetFreqs(s.RadioLoHz, s.RadioLoHz);
+        var (rxHz, txHz) = RitXitMath.WireFreqs(s.Mode, s.VfoHz, s.ItMode, s.RitOffsetHz, s.XitOffsetHz);
+        p2?.SetFreqs(rxHz, txHz);
 
         // iter5 pass-2: lock-free engine pointer read. The lock previously
         // here only provided pointer atomicity (the engine.* calls below
