@@ -18,7 +18,7 @@
 | # | Thetis CatCmd | Display Name | Type | Zeus API | Zeus Status | Notes |
 |---|---|---|---|---|---|---|
 | 1 | `ChangeFreqVfoA` | Change Freq Vfo A | W | `POST /api/vfo` | READY | |
-| 2 | `ChangeFreqVfoB` | Change Freq Vfo B | W | `POST /api/vfo` | READY | VFO B support via request body |
+| 2 | `ChangeFreqVfoB` | Change Freq Vfo B | W | — | MISSING | Zeus has no VFO B (`VfoSetRequest` is VFO A only) |
 | 3 | `MultiStepVfoA` | Multi Step Vfo A | W | `POST /api/vfo` | READY | Larger step increments |
 | 4 | `VfoAtoB` | VfoA To B | B | — | MISSING | |
 | 5 | `VfoBtoA` | VfoB To A | B | — | MISSING | |
@@ -29,8 +29,8 @@
 | 10 | `LockVFOBOnOff` | Lock VFO B | B | — | MISSING | |
 | 11 | `MoveVFOADown100Khz` | Move VFOA Down 100Khz | B | `POST /api/vfo` | READY | Compute freq offset client-side |
 | 12 | `MoveVFOAUp100Khz` | Move VFOA Up 100Khz | B | `POST /api/vfo` | READY | Compute freq offset client-side |
-| 13 | `MoveVFOBDown100Khz` | Move VFOB Down 100Khz | B | `POST /api/vfo` | READY | |
-| 14 | `MoveVFOBUp100Khz` | Move VFOB Up 100Khz | B | `POST /api/vfo` | READY | |
+| 13 | `MoveVFOBDown100Khz` | Move VFOB Down 100Khz | B | — | MISSING | Zeus has no VFO B |
+| 14 | `MoveVFOBUp100Khz` | Move VFOB Up 100Khz | B | — | MISSING | Zeus has no VFO B |
 | 15 | `TuningStepUp` | Tuning Step Up | B | — | MISSING | No tuning-step API |
 | 16 | `TuningStepDown` | Tuning Step Down | B | — | MISSING | |
 | 17 | `ZeroBeatPress` | Zero Beat | B | — | MISSING | |
@@ -42,20 +42,20 @@
 
 | # | Thetis CatCmd | Display Name | Type | Zeus API | Zeus Status | Notes |
 |---|---|---|---|---|---|---|
-| 21 | `BandUp` | Band Up | B | `POST /api/bands/current` | READY | |
-| 22 | `BandDown` | Band Down | B | `POST /api/bands/current` | READY | |
-| 23 | `Band160m` | Band 160m | B | `POST /api/bands/current` | READY | Direct band select |
-| 24 | `Band80m` | Band 80m | B | `POST /api/bands/current` | READY | |
-| 25 | `Band60m` | Band 60m | B | `POST /api/bands/current` | READY | |
-| 26 | `Band40m` | Band 40m | B | `POST /api/bands/current` | READY | |
-| 27 | `Band30m` | Band 30m | B | `POST /api/bands/current` | READY | |
-| 28 | `Band20m` | Band 20m | B | `POST /api/bands/current` | READY | |
-| 29 | `Band17m` | Band 17m | B | `POST /api/bands/current` | READY | |
-| 30 | `Band15m` | Band 15m | B | `POST /api/bands/current` | READY | |
-| 31 | `Band12m` | Band 12m | B | `POST /api/bands/current` | READY | |
-| 32 | `Band10m` | Band 10m | B | `POST /api/bands/current` | READY | |
-| 33 | `Band6m` | Band 6m | B | `POST /api/bands/current` | READY | |
-| 34 | `Band2m` | Band 2m | B | `POST /api/bands/current` | READY | |
+| 21 | `BandUp` | Band Up | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | No direct band-switch API; plugin reads band memory, computes next band freq, posts VFO |
+| 22 | `BandDown` | Band Down | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | Same as BandUp but previous band |
+| 23 | `Band160m` | Band 160m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | Plugin reads band memory for 160m, posts freq to VFO |
+| 24 | `Band80m` | Band 80m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 25 | `Band60m` | Band 60m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 26 | `Band40m` | Band 40m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 27 | `Band30m` | Band 30m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 28 | `Band20m` | Band 20m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 29 | `Band17m` | Band 17m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 30 | `Band15m` | Band 15m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 31 | `Band12m` | Band 12m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 32 | `Band10m` | Band 10m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 33 | `Band6m` | Band 6m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
+| 34 | `Band2m` | Band 2m | B | `GET /api/bands/memory` + `POST /api/vfo` | PARTIAL | |
 | 35 | `Rx2BandUp` | Rx2 Band Up | B | — | N/A | RX2 not implemented |
 | 36 | `Rx2BandDown` | Rx2 Band Down | B | — | N/A | |
 | 37–46 | `Band160mRX2`..`Band2mRX2` | RX2 Band *x* | B | — | N/A | RX2 not implemented |
@@ -64,8 +64,8 @@
 
 | # | Thetis CatCmd | Display Name | Type | Zeus API | Zeus Status | Notes |
 |---|---|---|---|---|---|---|
-| 47 | `Rx1ModeNext` | Rx1 Mode Next | B | `POST /api/mode` | READY | |
-| 48 | `Rx1ModePrev` | Rx1 Mode Prev | B | `POST /api/mode` | READY | |
+| 47 | `Rx1ModeNext` | Rx1 Mode Next | B | `GET /api/state` + `POST /api/mode` | PARTIAL | Endpoint takes absolute `RxMode`, not next/prev; plugin must read current mode and compute next |
+| 48 | `Rx1ModePrev` | Rx1 Mode Prev | B | `GET /api/state` + `POST /api/mode` | PARTIAL | Same, compute previous mode |
 | 49 | `ModeSSB` | Mode SSB | B | `POST /api/mode` | READY | Direct mode select |
 | 50 | `ModeLSB` | Mode LSB | B | `POST /api/mode` | READY | |
 | 51 | `ModeUSB` | Mode USB | B | `POST /api/mode` | READY | |
@@ -88,8 +88,8 @@
 
 | # | Thetis CatCmd | Display Name | Type | Zeus API | Zeus Status | Notes |
 |---|---|---|---|---|---|---|
-| 79 | `Rx1FilterWider` | Rx1 Filter Wider | B | `POST /api/bandwidth` | READY | |
-| 80 | `Rx1FilterNarrower` | Rx1 Filter Narrower | B | `POST /api/bandwidth` | READY | |
+| 79 | `Rx1FilterWider` | Rx1 Filter Wider | B | `GET /api/state` + `POST /api/bandwidth` | PARTIAL | Endpoint takes absolute `(Low, High)`, not relative; plugin must read current and widen |
+| 80 | `Rx1FilterNarrower` | Rx1 Filter Narrower | B | `GET /api/state` + `POST /api/bandwidth` | PARTIAL | Same, narrow |
 | 81 | `FilterBandwidth` | FilterBandwidth | W | `POST /api/bandwidth` | READY | |
 | 82 | `FilterHigh` | Filter High | W | `POST /api/filter` | READY | |
 | 83 | `FilterLow` | Filter Low | W | `POST /api/filter` | READY | |
@@ -143,9 +143,9 @@
 
 | # | Thetis CatCmd | Display Name | Type | Zeus API | Zeus Status | Notes |
 |---|---|---|---|---|---|---|
-| 114 | `NoiseReductionOnOff` | NR1 On Off | B | `POST /api/rx/nr` | READY | |
-| 115 | `NoiseReduction2OnOff` | NR2 On Off | B | `POST /api/rx/nr` | READY | |
-| 116 | `NoiseReduction3OnOff` | NR3 On Off | B | `POST /api/rx/nr` | READY | |
+| 114 | `NoiseReductionOnOff` | NR1 On Off | B | `POST /api/rx/nr` | PARTIAL | Endpoint takes full `NrConfig` (mode, ANF, SNB, NB…); plugin must read-modify-write to toggle NR mode |
+| 115 | `NoiseReduction2OnOff` | NR2 On Off | B | `POST /api/rx/nr` | PARTIAL | Same read-modify-write pattern |
+| 116 | `NoiseReduction3OnOff` | NR3 On Off | B | `POST /api/rx/nr` | PARTIAL | Same read-modify-write pattern |
 | 117 | `NoiseReduction4OnOff` | NR4 On Off | B | `POST /api/rx/nr4` | READY | |
 | 118 | `NoiseReduction4Amount` | NR4 Amount | K | `POST /api/rx/nr4` | READY | |
 | 119 | `Rx1NoiseBlanker1OnOff` | Rx1 NB1 On Off | B | — | MISSING | No NB toggle API |
@@ -317,32 +317,45 @@
 
 ## Summary
 
-| Status | Count | % |
+| Status | Count | Notes |
 |---|---|---|
-| **READY** | ~55 | 23% |
-| **PARTIAL** | ~8 | 3% |
-| **MISSING** (Zeus could add) | ~95 | 40% |
-| **N/A** (RX2 / WinForms / MIDI-internal) | ~80 | 34% |
-| **Total** | ~238 | 100% |
+| **READY** | 35 | Direct 1:1 mapping to existing Zeus endpoint |
+| **PARTIAL** | 27 | Zeus has the capability but plugin must add sequencing logic (read-modify-write, band memory lookup, mode cycling) |
+| **MISSING** (Zeus could add) | ~98 | No Zeus API surface for this command |
+| **N/A** (RX2 / WinForms / MIDI-internal) | ~80 | Not applicable to Zeus |
 
-### READY commands — usable for MIDI v1 plugin today
+### READY commands (35) — direct 1:1 mapping
 
-These map directly to existing Zeus API endpoints:
+These map directly to existing Zeus API endpoints with no extra logic:
 
-1. VFO A/B tuning, ±100 kHz jumps
-2. All 12 direct band selects + band up/down
-3. All 14 mode selects + mode next/prev
-4. Filter wider/narrower, bandwidth wheel, high/low edges, TX filter edges
-5. AF gain (knob + wheel), mute
-6. AGC level (knob + wheel), auto AGC
-7. Preamp setting
-8. NR1–NR4 on/off, NR4 amount
-9. MOX, TUN, drive (knob + wheel), tune drive, mic gain, two-tone, PureSignal, TX AF monitor
-10. Zoom (knob + wheel + inc/dec)
+1. **VFO A** — tuning (wheel), ±100 kHz jumps (buttons), multi-step (wheel) — 4 commands
+2. **Mode direct select** — LSB, USB, DSB, CW, CWL, CWU, FM, AM, DIGU, SPEC, DIGL, SAM, DRM, SSB — 14 commands
+3. **Filter** — bandwidth wheel, high/low edges (wheel), TX filter high/low (wheel) — 5 commands
+4. **RX Audio** — AF gain (knob + wheel), mute — 3 commands
+5. **AGC** — level (knob + wheel), auto AGC — 3 commands
+6. **Preamp** — setting knob — 1 command
+7. **TX** — MOX, TUN, drive (knob + wheel), tune drive, mic gain, two-tone, PureSignal, TX AF monitor — 10 commands
+8. **Display** — zoom (knob + wheel + inc/dec) — 4 commands
+
+*Note: NR4 on/off and NR4 amount are counted as READY (dedicated `/api/rx/nr4` endpoint). NR1–3 are PARTIAL (compound `NrConfig` endpoint).*
+
+### PARTIAL commands (27) — implementable with plugin-side logic
+
+These require the plugin to read current state and compute the target value:
+
+1. **Band select** — 12 direct + up/down = 14 commands (read band memory → post VFO freq)
+2. **Mode next/prev** — 2 commands (read current mode → compute next → post)
+3. **Filter wider/narrower** — 2 commands (read current bandwidth → adjust → post)
+4. **NR1/NR2/NR3 toggle** — 3 commands (read full `NrConfig` → flip one field → post)
+5. **Filter shift** — 1 command (move both edges)
+6. **Display** — average, peak, TX filter, waterfall limits — 5 commands (read-modify-write on `DisplaySettings`)
+7. **MON on/off** — 1 command (toggle via monitor endpoint)
+8. **Start/Stop** — 1 command (connect/disconnect, not toggle)
 
 ### Key gaps for a complete Thetis-parity MIDI experience
 
 - RIT/XIT/Split — entire subsystem missing from Zeus API
+- VFO B — Zeus has no VFO B support
 - VOX control — no API surface
 - CW speed / break-in / macros — no API surface
 - Noise blanker toggles (NB1/NB2) — no API surface
