@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Zeus.Contracts;
 using Zeus.Dsp.Wdsp;
+using Zeus.Plugins.Contracts;
 using Zeus.Plugins.Host;
 using Zeus.Protocol1;
 using Zeus.Protocol1.Discovery;
@@ -242,6 +243,10 @@ public static class ZeusHost
         // owns no resources, just a SemaphoreSlim to prevent re-entry.
         builder.Services.AddSingleton<FrequencyCalibrationService>();
         builder.Services.AddSingleton<TxService>();
+        builder.Services.AddSingleton<IRadioCommandSurface>(sp =>
+            new RadioCommandSurfaceAdapter(
+                sp.GetRequiredService<RadioService>(),
+                sp.GetRequiredService<TxService>()));
         builder.Services.AddSingleton<TxAudioIngest>();
         // Resolve at startup so the MicPcmReceived subscription attaches before the
         // first client connects (lazy resolution would leave early frames unhandled).

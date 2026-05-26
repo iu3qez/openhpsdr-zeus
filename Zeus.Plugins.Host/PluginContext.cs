@@ -18,7 +18,8 @@ internal sealed class PluginContext : IPluginContext
         ILogger logger,
         IPluginSettings settings,
         IRadioStateReader? radio,
-        IRadioController? radioController)
+        IRadioController? radioController,
+        IRadioCommandSurface? commandSurface)
     {
         PluginId = pluginId;
         Manifest = manifest;
@@ -28,6 +29,7 @@ internal sealed class PluginContext : IPluginContext
         Settings = settings;
         Radio = radio;
         RadioController = radioController;
+        CommandSurface = commandSurface;
     }
 
     public string PluginId { get; }
@@ -38,4 +40,5 @@ internal sealed class PluginContext : IPluginContext
     public IPluginSettings Settings { get; }
     public IRadioStateReader? Radio { get; }
     public IRadioController? RadioController { get; }
+    public IRadioCommandSurface? CommandSurface { get; }
 }

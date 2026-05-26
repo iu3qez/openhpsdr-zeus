@@ -130,6 +130,9 @@ public sealed class PluginManager : IHostedService, IAsyncDisposable
                 : null,
             radioController: granted.HasFlag(PluginCapabilities.ControlRadio)
                 ? _services.GetService<IRadioController>()
+                : null,
+            commandSurface: granted.HasFlag(PluginCapabilities.ControlRadio)
+                ? _services.GetService<IRadioCommandSurface>()
                 : null);
 
         using (var initCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
