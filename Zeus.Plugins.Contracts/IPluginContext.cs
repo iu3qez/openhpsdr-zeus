@@ -40,9 +40,17 @@ public interface IPluginContext
     IRadioStateReader? Radio { get; }
 
     /// <summary>
+    /// Full radio command surface. Null if
+    /// <see cref="PluginCapabilities.ControlRadio"/> was not granted.
+    /// Replaces <see cref="RadioController"/> from ABI 2.
+    /// </summary>
+    IRadioCommandSurface? CommandSurface { get; }
+
+    /// <summary>
     /// Mutating radio controller. Null if
     /// <see cref="PluginCapabilities.ControlRadio"/> was not granted.
     /// </summary>
+    [Obsolete("Use CommandSurface (ABI 2). RadioController will be removed in ABI 3.")]
     IRadioController? RadioController { get; }
 }
 
