@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "com.openhpsdr.zeus.midi",
+  "name": "MIDI Controller",
+  "version": "1.0.0",
+  "author": "OpenHPSDR Zeus contributors",
+  "description": "Map USB MIDI controllers to radio commands (VFO, band, mode, filter, TX, DSP)",
+  "license": "GPL-2.0-or-later",
+  "sdk": { "abi": 2, "minVersion": "2.0.0" },
+  "entrypoint": { "assembly": "Zeus.Plugins.Midi.dll" },
+  "capabilities": ["ReadRadioState", "ControlRadio", "PersistSettings"],
+  "ui": {
+    "modules": ["ui/midi-settings.es.js"],
+    "panels": [
+      {
+        "id": "midi.settings",
+        "title": "MIDI Controllers",
+        "icon": "Music",
+        "slot": "settings.plugins",
+        "category": "controls"
+      }
+    ]
+  }
+}
