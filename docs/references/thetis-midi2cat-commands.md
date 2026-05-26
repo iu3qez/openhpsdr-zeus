@@ -148,10 +148,10 @@
 | 116 | `NoiseReduction3OnOff` | NR3 On Off | B | `POST /api/rx/nr` | PARTIAL | Same read-modify-write pattern |
 | 117 | `NoiseReduction4OnOff` | NR4 On Off | B | `POST /api/rx/nr4` | READY | |
 | 118 | `NoiseReduction4Amount` | NR4 Amount | K | `POST /api/rx/nr4` | READY | |
-| 119 | `Rx1NoiseBlanker1OnOff` | Rx1 NB1 On Off | B | — | MISSING | No NB toggle API |
-| 120 | `Rx1Noiseblanker2OnOff` | Rx1 NB2 On Off | B | — | MISSING | |
-| 121 | `AutoNotchOnOff` | Auto Notch On Off | B | — | MISSING | |
-| 122 | `SpectralNoiseBlankerOnOff` | SNB On Off | B | — | MISSING | |
+| 119 | `Rx1NoiseBlanker1OnOff` | Rx1 NB1 On Off | B | `POST /api/rx/nr` | PARTIAL | Accessible via compound `NrConfig` (read-modify-write on `NbMode`) |
+| 120 | `Rx1Noiseblanker2OnOff` | Rx1 NB2 On Off | B | `POST /api/rx/nr` | PARTIAL | Same — toggle `NbMode` in `NrConfig` |
+| 121 | `AutoNotchOnOff` | Auto Notch On Off | B | `POST /api/rx/nr` | PARTIAL | Accessible via compound `NrConfig` (read-modify-write on `AnfEnabled`) |
+| 122 | `SpectralNoiseBlankerOnOff` | SNB On Off | B | `POST /api/rx/nr` | PARTIAL | Accessible via compound `NrConfig` (read-modify-write on `SnbEnabled`) |
 | 123 | `Rx2NoiseReductionOnOff` | Rx2 NR1 On Off | B | — | N/A | |
 | 124 | `Rx2NoiseReduction2OnOff` | Rx2 NR2 On Off | B | — | N/A | |
 | 125 | `Rx2NoiseReduction3OnOff` | Rx2 NR3 On Off | B | — | N/A | |
@@ -320,8 +320,8 @@
 | Status | Count | Notes |
 |---|---|---|
 | **READY** | 35 | Direct 1:1 mapping to existing Zeus endpoint |
-| **PARTIAL** | 27 | Zeus has the capability but plugin must add sequencing logic (read-modify-write, band memory lookup, mode cycling) |
-| **MISSING** (Zeus could add) | ~98 | No Zeus API surface for this command |
+| **PARTIAL** | 31 | Zeus has the capability but plugin must add sequencing logic (read-modify-write, band memory lookup, mode cycling) |
+| **MISSING** (Zeus could add) | ~94 | No Zeus API surface for this command |
 | **N/A** (RX2 / WinForms / MIDI-internal) | ~80 | Not applicable to Zeus |
 
 ### READY commands (35) — direct 1:1 mapping
@@ -337,9 +337,9 @@ These map directly to existing Zeus API endpoints with no extra logic:
 7. **TX** — MOX, TUN, drive (knob + wheel), tune drive, mic gain, two-tone, PureSignal, TX AF monitor — 10 commands
 8. **Display** — zoom (knob + wheel + inc/dec) — 4 commands
 
-*Note: NR4 on/off and NR4 amount are counted as READY (dedicated `/api/rx/nr4` endpoint). NR1–3 are PARTIAL (compound `NrConfig` endpoint).*
+*Note: NR4 on/off and NR4 amount are counted as READY (dedicated `/api/rx/nr4` endpoint). NR1–3, NB1/NB2, ANF, and SNB are PARTIAL (compound `NrConfig` endpoint — read-modify-write).*
 
-### PARTIAL commands (27) — implementable with plugin-side logic
+### PARTIAL commands (31) — implementable with plugin-side logic
 
 These require the plugin to read current state and compute the target value:
 
@@ -347,10 +347,12 @@ These require the plugin to read current state and compute the target value:
 2. **Mode next/prev** — 2 commands (read current mode → compute next → post)
 3. **Filter wider/narrower** — 2 commands (read current bandwidth → adjust → post)
 4. **NR1/NR2/NR3 toggle** — 3 commands (read full `NrConfig` → flip one field → post)
-5. **Filter shift** — 1 command (move both edges)
-6. **Display** — average, peak, TX filter, waterfall limits — 5 commands (read-modify-write on `DisplaySettings`)
-7. **MON on/off** — 1 command (toggle via monitor endpoint)
-8. **Start/Stop** — 1 command (connect/disconnect, not toggle)
+5. **NB1/NB2 toggle** — 2 commands (read full `NrConfig` → flip `NbMode` → post)
+6. **ANF / SNB toggle** — 2 commands (read full `NrConfig` → flip `AnfEnabled` / `SnbEnabled` → post)
+7. **Filter shift** — 1 command (move both edges)
+8. **Display** — average, peak, TX filter, waterfall limits — 5 commands (read-modify-write on `DisplaySettings`)
+9. **MON on/off** — 1 command (toggle via monitor endpoint)
+10. **Start/Stop** — 1 command (connect/disconnect, not toggle)
 
 ### Key gaps for a complete Thetis-parity MIDI experience
 
@@ -358,7 +360,7 @@ These require the plugin to read current state and compute the target value:
 - VFO B — Zeus has no VFO B support
 - VOX control — no API surface
 - CW speed / break-in / macros — no API surface
-- Noise blanker toggles (NB1/NB2) — no API surface
+- Noise blanker toggles (NB1/NB2) — reachable via compound `NrConfig` but no dedicated toggle API
 - AGC mode cycle — no API surface
 - Squelch — no API surface
 - Pan (horizontal scroll) — no API surface
