@@ -27,20 +27,20 @@ The command *vocabulary* is the reference; the implementation is not.
 
 ## 2. Goals
 
-1. **Thetis command parity on Zeus's existing API surface.** Every Midi2Cat command that Zeus already exposes as a REST/SignalR endpoint must be mappable from a MIDI controller on day one. Per the [cross-match reference](../references/thetis-midi2cat-commands.md), this is **35 commands** (READY — direct 1:1 endpoint mapping) + **27 commands** (PARTIAL — implementable with plugin-side read-modify-write or sequencing logic).
+1. **Thetis command parity on Zeus's existing command surface.** Every Midi2Cat command that Zeus implements as a `RadioService` / `TxService` method (the same surface that TCI clients already use) must be mappable from a MIDI controller on day one. This is **~69 commands** — see §6.
 2. **Plugin architecture.** Delivered as a Zeus plugin (`IZeusPlugin` + `IBackendPlugin`), not baked into the core. Installable/removable. Uses the existing plugin system contracts (SDK ABI 1).
 3. **Cross-platform.** Windows, macOS, Linux. Input only (no LED output in v1).
 4. **Learn mode.** Operator connects a controller, presses "Learn", moves a knob, and assigns it to a Zeus command. No manual MIDI channel/CC editing required.
 5. **Persistent mappings.** Saved per-device in the plugin's scoped settings store (`IPluginSettings`). Survive restart.
 6. **Hot-plug.** Device connect/disconnect detected at runtime without restart.
-7. **Zero disruption to Zeus core.** No changes to `Zeus.Contracts`, `Zeus.Server.Hosting`, or `zeus-web` required — the plugin is self-contained.
+7. **Minimal Zeus core change.** One new interface (`IRadioCommandSurface`) extracted from existing `RadioService` / `TxService` public methods and exposed via `IPluginContext`. This is a mechanical refactor — no new logic, no behavior change. `TciSession` and the MIDI plugin both consume the same interface.
 
 ## 3. Non-Goals
 
 1. **LED / MIDI output feedback.** The messiest, most device-specific part of Midi2Cat. Deferred to a future version if demand exists.
 2. **RX2 commands.** Zeus does not implement RX2. The ~80 RX2/N/A commands from Midi2Cat are out of scope.
-3. **Commands Zeus doesn't expose.** The ~98 MISSING commands (RIT/XIT, VFO B, VOX, CW speed, NB toggles, squelch, etc.) cannot be wired until Zeus adds the corresponding API surface. The plugin will grow as Zeus does.
-8. **VFO B.** Zeus has no VFO B support (`VfoSetRequest` is VFO A only). VFO B commands are MISSING.
+3. **Commands Zeus doesn't implement.** Commands where TCI has only stubs (RIT/XIT, split, VFO lock, squelch, CW speed — ack-only, no backend wiring) cannot be wired until Zeus implements the backend. The plugin will grow as Zeus does.
+8. **VFO B.** Zeus has no VFO B support. VFO B commands are out of scope.
 4. **Thetis `midi2cat.xml` import.** Mappings are user-specific, quick to recreate via learn UI. A converter is not worth maintaining.
 5. **MIDI-over-Bluetooth, Network MIDI (rtpMIDI), MIDI 2.0.** Out of scope for v1.
 6. **Named preset library.** Single active mapping set per device. Named presets can come later.
@@ -71,7 +71,7 @@ com.openhpsdr.zeus.midi/
   "license": "GPL-2.0-or-later",
   "sdk": { "abi": 1, "minVersion": "1.0.0" },
   "entrypoint": { "assembly": "ZeusMidiPlugin.dll" },
-  "capabilities": ["ReadRadioState", "ControlRadio", "NetworkAccess", "PersistSettings"],
+  "capabilities": ["ReadRadioState", "ControlRadio", "PersistSettings"],
   "ui": {
     "modules": ["ui/midi-settings.es.js"],
     "panels": [
@@ -87,13 +87,26 @@ com.openhpsdr.zeus.midi/
 }
 ```
 
-### 4.3 Core Classes
+### 4.3 Key Architectural Decision: Reuse the TCI Command Surface
+
+Zeus already has a **complete command dispatch layer** in `TciSession.DispatchCommand()` that translates string commands into `RadioService` / `TxService` method calls. This is the same layer that TCI clients (MSHV, WSJT-X, JTDX, SDR#) use to control the radio.
+
+Instead of the MIDI plugin calling REST endpoints (which creates tight coupling to internal DTOs and requires `NetworkAccess`), it calls the **same `RadioService` / `TxService` methods** that TCI already uses. This:
+
+- **Eliminates REST coupling** — no HTTP calls, no DTO imports, no port discovery
+- **Eliminates the READY/PARTIAL distinction** — all commands go through the same code path
+- **Unlocks commands that were "MISSING" via REST but implemented in TCI** — NB1/NB2 toggle, ANF, SNB, preamp, attenuator (all wired in `TciSession`)
+- **Makes the plugin truly self-contained** — only needs `ControlRadio` + `ReadRadioState` capabilities
+
+This requires extracting an **`IRadioCommandSurface`** interface from the methods `TciSession` already calls, then injecting it into the plugin via `IPluginContext`. TciSession and the MIDI plugin both consume the same interface. See §14 (red-light) for the maintainer decision on this refactor.
+
+### 4.4 Core Classes
 
 ```
 ZeusMidiPlugin : IZeusPlugin, IBackendPlugin
 ├── InitializeAsync()        → open MIDI engine, load mappings, start listener
 ├── ShutdownAsync()          → close devices, dispose engine
-└── MapEndpoints()           → REST surface for UI
+└── MapEndpoints()           → REST surface for settings UI
 
 MidiEngine (abstraction)
 ├── DryWetMidiEngine         → Windows + macOS (Melanchall.DryWetMidi)
@@ -102,15 +115,17 @@ MidiEngine (abstraction)
 
 MidiDispatcher
 ├── Owns mapping table: (DeviceName, ControlId, ControlType) → ZeusMidiCommand
-├── On MIDI event → lookup → call IRadioController / REST endpoint
-└── Learn mode: buffer last event, expose via hub
+├── On MIDI event → lookup → call IRadioCommandSurface methods
+├── State mirror via IRadioStateReader events (for relative commands)
+├── Thread-safe: ConcurrentDictionary for mapping table
+└── Learn mode: buffer last event, expose via REST
 
 ZeusMidiCommand (enum)
-├── 62 radio commands (35 READY + 27 PARTIAL) + 3 meta-commands
-└── Extensible as Zeus API surface grows
+├── Maps 1:1 to IRadioCommandSurface methods
+└── Extensible as the interface grows
 ```
 
-### 4.4 Data Flow
+### 4.5 Data Flow
 
 ```
 [USB MIDI Controller]
@@ -120,15 +135,68 @@ ZeusMidiCommand (enum)
     │
     │  MidiEvent { DeviceName, ControlType, ControlId, Value }
     ▼
-[MidiDispatcher]                     ← mapping lookup
+[MidiDispatcher]                     ← mapping lookup + value normalization
     │
     │  ZeusMidiCommand + normalized value
     ▼
-[IRadioController / HTTP calls]      ← same path as SignalR hub
+[IRadioCommandSurface]               ← same interface used by TciSession
     │
     ▼
-[RadioService / TxService / DspPipelineService]
+[RadioService / TxService]           ← direct method calls, no HTTP
 ```
+
+### 4.6 IRadioCommandSurface — Proposed Interface
+
+Extracted from methods `TciSession` already calls on `RadioService` / `TxService`:
+
+```csharp
+public interface IRadioCommandSurface
+{
+    // VFO
+    StateDto SetVfo(long hz);
+    StateDto Snapshot();
+
+    // Mode / Filter
+    StateDto SetMode(RxMode mode);
+    StateDto SetFilter(int lowHz, int highHz);
+    StateDto SetTxFilter(int lowHz, int highHz);
+
+    // TX
+    bool TrySetMox(bool on, out string? error);
+    bool TrySetTun(bool on, out string? error);
+    void SetDrive(int percent);
+    void SetTuneDrive(int percent);
+
+    // Audio
+    StateDto SetRxAfGain(double db);
+
+    // AGC
+    StateDto SetAgcTop(double topDb);
+    StateDto SetAutoAgc(bool enabled);
+
+    // Preamp / Attenuator
+    StateDto SetPreamp(bool on);
+    StateDto SetAttenuator(HpsdrAtten atten);
+    StateDto SetAutoAtt(bool enabled);
+
+    // NR / NB / ANF / SNB
+    StateDto SetNr(NrConfig cfg);
+    StateDto SetNr4(Nr4ConfigSetRequest req);
+
+    // Display
+    StateDto SetZoom(int level);
+
+    // TX extras
+    StateDto SetTxMonitor(TxMonitorSetRequest req);
+    StateDto SetTwoTone(TwoToneSetRequest req);
+    StateDto SetPs(PsControlSetRequest req);
+
+    // Mic
+    void SetMicGain(double db);  // via DspPipelineService
+}
+```
+
+`RadioService` already implements all these methods. The interface extraction is a mechanical refactor — no new logic, no behavior change. `TciSession` switches from `_radio.SetVfo(hz)` to `_commandSurface.SetVfo(hz)`. The MIDI plugin receives `IRadioCommandSurface` via `IPluginContext`.
 
 ### 4.5 Plugin REST Endpoints
 
@@ -191,104 +259,74 @@ IMidiEngine engine = RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
 
 ## 6. Command Set (v1)
 
-The v1 command set covers **62 commands**: 35 READY (direct 1:1 endpoint mapping) + 27 PARTIAL (plugin implements sequencing logic). Grouped by control type.
+Since the plugin dispatches through `IRadioCommandSurface` (§4.3), every command that TCI already handles is available. No REST coupling, no READY/PARTIAL distinction. The state mirror (`IRadioStateReader` events) provides current state for relative commands (mode next, filter wider, NR toggle).
 
-### 6.0 State Mirror
+### 6.1 Buttons (toggle / momentary)
 
-Many PARTIAL commands require knowing the current radio state (current mode for mode-next, current bandwidth for filter-wider, current NR config for NR toggle, etc.). Rather than doing a GET-then-POST for every event, the plugin subscribes to the Zeus WebSocket (`/ws`) at init and maintains a **local state mirror**. This gives zero-latency reads for every dispatch.
-
-### 6.1 READY — Buttons (toggle / momentary)
-
-Direct 1:1 mapping, no state read required.
-
-| ZeusMidiCommand | Thetis Equivalent | Zeus Endpoint |
-|---|---|---|
-| `Mox` | `MOXOnOff` | `POST /api/tx/mox` |
-| `Tune` | `TunOnOff` | `POST /api/tx/tun` |
-| `TwoTone` | `TwoToneOnOff` | `POST /api/tx/twotone` |
-| `PureSignal` | `PSOnOff` | `POST /api/tx/ps` |
-| `Mute` | `MuteOnOff` | `POST /api/audio/native/mute` |
-| `Nr4` | `NoiseReduction4OnOff` | `POST /api/rx/nr4` |
-| `AutoAgc` | `RX1AutoAGC` | `POST /api/auto-agc` |
-| `ModeSsb` | `ModeSSB` | `POST /api/mode` |
-| `ModeLsb` | `ModeLSB` | `POST /api/mode` |
-| `ModeUsb` | `ModeUSB` | `POST /api/mode` |
-| `ModeDsb` | `ModeDSB` | `POST /api/mode` |
-| `ModeCw` | `ModeCW` | `POST /api/mode` |
-| `ModeCwl` | `ModeCWL` | `POST /api/mode` |
-| `ModeCwu` | `ModeCWU` | `POST /api/mode` |
-| `ModeFm` | `ModeFM` | `POST /api/mode` |
-| `ModeAm` | `ModeAM` | `POST /api/mode` |
-| `ModeDigu` | `ModeDIGU` | `POST /api/mode` |
-| `ModeDigl` | `ModeDIGL` | `POST /api/mode` |
-| `ModeSam` | `ModeSAM` | `POST /api/mode` |
-| `ModeSpec` | `ModeSPEC` | `POST /api/mode` |
-| `ModeDrm` | `ModeDRM` | `POST /api/mode` |
-| `ZoomIn` | `ZoomInc` | `POST /api/rx/zoom` |
-| `ZoomOut` | `ZoomDec` | `POST /api/rx/zoom` |
-| `VfoADown100k` | `MoveVFOADown100Khz` | read state → `POST /api/vfo` (freq - 100 kHz) |
-| `VfoAUp100k` | `MoveVFOAUp100Khz` | read state → `POST /api/vfo` (freq + 100 kHz) |
-
-### 6.2 READY — Knobs / Sliders (absolute 0–127)
-
-| ZeusMidiCommand | Thetis Equivalent | Zeus Endpoint |
-|---|---|---|
-| `AfGain` | `SetAFGain` / `VolumeVfoA` | `POST /api/rx/afGain` |
-| `AgcLevel` | `AGCLevel` | `POST /api/agcGain` |
-| `Preamp` | `PreAmpSettingsKnob` | `POST /api/preamp` |
-| `Drive` | `DriveLevel` | `POST /api/tx/drive` |
-| `TuneDrive` | `TUNPowerLevel` | `POST /api/tx/tune-drive` |
-| `MicGain` | `MicGain` | `POST /api/mic-gain` |
-| `TxMonitor` | `TXAFMonitor` | `POST /api/tx/monitor` |
-| `Nr4Amount` | `NoiseReduction4Amount` | `POST /api/rx/nr4` |
-| `Zoom` | `ZoomSliderFix` | `POST /api/rx/zoom` |
-
-### 6.3 READY — Wheels / Encoders (relative ±delta)
-
-| ZeusMidiCommand | Thetis Equivalent | Zeus Endpoint |
-|---|---|---|
-| `VfoATune` | `ChangeFreqVfoA` | `POST /api/vfo` |
-| `VfoAMultiStep` | `MultiStepVfoA` | `POST /api/vfo` (larger step) |
-| `FilterBandwidth` | `FilterBandwidth` | `POST /api/bandwidth` |
-| `FilterHigh` | `FilterHigh` | `POST /api/filter` |
-| `FilterLow` | `FilterLow` | `POST /api/filter` |
-| `TxFilterHigh` | `TXFilterHigh` | `POST /api/tx-filter` |
-| `TxFilterLow` | `TXFilterLow` | `POST /api/tx-filter` |
-| `ZoomWheel` | `ZoomSliderInc` | `POST /api/rx/zoom` |
-| `AfGainWheel` | `VolumeVfoA_inc` | `POST /api/rx/afGain` |
-| `AgcLevelWheel` | `AGCLevel_inc` | `POST /api/agcGain` |
-| `DriveWheel` | `DriveLevel_inc` | `POST /api/tx/drive` |
-
-**Subtotal READY: 35** (25 buttons + 9 knobs + 11 wheels — 10 overlap as wheel variants of knob commands)
-
-### 6.4 PARTIAL — require plugin-side state + sequencing logic
-
-These commands need the state mirror (§6.0) to read current state, compute the target, and POST.
-
-| ZeusMidiCommand | Thetis Equivalent | Type | Logic |
+| ZeusMidiCommand | Thetis Equivalent | IRadioCommandSurface Call | Notes |
 |---|---|---|---|
-| `BandUp` | `BandUp` | B | Read band memory → find next band → `POST /api/vfo` + `POST /api/mode` |
-| `BandDown` | `BandDown` | B | Same, previous band |
-| `Band160m`..`Band2m` | `Band160m`..`Band2m` | B | Read band memory for target band → `POST /api/vfo` + `POST /api/mode` (12 commands) |
-| `ModeNext` | `Rx1ModeNext` | B | Read current mode → compute next in sequence → `POST /api/mode` |
-| `ModePrev` | `Rx1ModePrev` | B | Same, previous |
-| `FilterWider` | `Rx1FilterWider` | B | Read current (low, high) → widen by step → `POST /api/bandwidth` |
-| `FilterNarrower` | `Rx1FilterNarrower` | B | Same, narrow |
-| `FilterShift` | `FilterShift` | K | Read current (low, high) → shift both edges → `POST /api/filter` |
-| `Nr1` | `NoiseReductionOnOff` | B | Read full `NrConfig` → flip NR mode → `POST /api/rx/nr` |
-| `Nr2` | `NoiseReduction2OnOff` | B | Same pattern |
-| `Nr3` | `NoiseReduction3OnOff` | B | Same pattern |
-| `MonOnOff` | `MONOnOff` | B | Toggle via `POST /api/tx/monitor` |
-| `DisplayAvg` | `DisplayAverage` | B | Read-modify-write `PUT /api/display-settings` |
-| `DisplayPeak` | `DisplayPeak` | B | Same |
-| `DisplayTxFilter` | `DisplayTxFilter` | B | Same |
-| `WaterfallLow` | `WaterfallLowLimit` | K | Same |
-| `WaterfallHigh` | `WaterfallHighLimit` | K | Same |
-| `StartStop` | `StartOnOff` | B | `POST /api/connect` or `POST /api/disconnect` based on current state |
+| `Mox` | `MOXOnOff` | `TrySetMox(!current)` | |
+| `Tune` | `TunOnOff` | `TrySetTun(!current)` | |
+| `TwoTone` | `TwoToneOnOff` | `SetTwoTone(...)` | |
+| `PureSignal` | `PSOnOff` | `SetPs(...)` | |
+| `Nr1` | `NoiseReductionOnOff` | `SetNr(cfg with NrMode toggled)` | Read state → flip |
+| `Nr2` | `NoiseReduction2OnOff` | `SetNr(cfg with NrMode toggled)` | |
+| `Nr3` | `NoiseReduction3OnOff` | `SetNr(cfg with NrMode toggled)` | |
+| `Nr4` | `NoiseReduction4OnOff` | `SetNr4(...)` | |
+| `Nb1` | `Rx1NoiseBlanker1OnOff` | `SetNr(cfg with NbMode toggled)` | **New — was MISSING via REST, wired in TCI** |
+| `Nb2` | `Rx1Noiseblanker2OnOff` | `SetNr(cfg with NbMode toggled)` | **New** |
+| `Anf` | `AutoNotchOnOff` | `SetNr(cfg with AnfEnabled toggled)` | **New** |
+| `Snb` | `SpectralNoiseBlankerOnOff` | `SetNr(cfg with SnbEnabled toggled)` | **New** |
+| `AutoAgc` | `RX1AutoAGC` | `SetAutoAgc(!current)` | |
+| `AutoAtt` | — (Zeus extra) | `SetAutoAtt(!current)` | |
+| `Preamp` | `Rx2PreAmpOnOff` (adapted) | `SetPreamp(!current)` | Toggle variant |
+| `ModeNext` | `Rx1ModeNext` | Read mode → compute next → `SetMode(next)` | |
+| `ModePrev` | `Rx1ModePrev` | Read mode → compute prev → `SetMode(prev)` | |
+| `ModeSsb` | `ModeSSB` | `SetMode(SSB)` | |
+| `ModeLsb`..`ModeDrm` | `ModeLSB`..`ModeDRM` | `SetMode(X)` | 13 direct mode selects |
+| `FilterWider` | `Rx1FilterWider` | Read filter → widen → `SetFilter(lo, hi)` | |
+| `FilterNarrower` | `Rx1FilterNarrower` | Read filter → narrow → `SetFilter(lo, hi)` | |
+| `ZoomIn` | `ZoomInc` | `SetZoom(current + step)` | |
+| `ZoomOut` | `ZoomDec` | `SetZoom(current - step)` | |
+| `VfoAUp100k` | `MoveVFOAUp100Khz` | `SetVfo(current + 100_000)` | |
+| `VfoADown100k` | `MoveVFOADown100Khz` | `SetVfo(current - 100_000)` | |
+| `BandUp` | `BandUp` | Read band memory → next band → `SetVfo(freq)` + `SetMode(mode)` | |
+| `BandDown` | `BandDown` | Same, previous | |
+| `Band160m`..`Band2m` | `Band160m`..`Band2m` | Band memory lookup → `SetVfo` + `SetMode` | 12 commands |
+| `Mute` | `MuteOnOff` | `SetMute(!current)` | Via native audio sink |
 
-**Subtotal PARTIAL: 27** (14 band + 2 mode + 2 filter + 1 filter shift + 3 NR + 1 MON + 3 display + 1 start)
+### 6.2 Knobs / Sliders (absolute 0–127 → parameter range)
 
-### 6.5 MIDI-Internal meta-commands (plugin-only, no Zeus API)
+| ZeusMidiCommand | Thetis Equivalent | IRadioCommandSurface Call | Range |
+|---|---|---|---|
+| `AfGain` | `SetAFGain` / `VolumeVfoA` | `SetRxAfGain(db)` | -50 to +20 dB |
+| `AgcLevel` | `AGCLevel` | `SetAgcTop(db)` | -20 to 120 dB |
+| `Drive` | `DriveLevel` | `SetDrive(pct)` | 0–100% |
+| `TuneDrive` | `TUNPowerLevel` | `SetTuneDrive(pct)` | 0–100% |
+| `MicGain` | `MicGain` | `SetMicGain(db)` | via DspPipelineService |
+| `TxMonitor` | `TXAFMonitor` | `SetTxMonitor(...)` | |
+| `Nr4Amount` | `NoiseReduction4Amount` | `SetNr4(...)` | |
+| `Zoom` | `ZoomSliderFix` | `SetZoom(level)` | |
+| `Attenuator` | — (Zeus extra) | `SetAttenuator(HpsdrAtten(db))` | **New — was in TCI, not in Midi2Cat** |
+
+### 6.3 Wheels / Encoders (relative ±delta)
+
+| ZeusMidiCommand | Thetis Equivalent | IRadioCommandSurface Call |
+|---|---|---|
+| `VfoATune` | `ChangeFreqVfoA` | `SetVfo(current + delta * step)` |
+| `VfoAMultiStep` | `MultiStepVfoA` | `SetVfo(current + delta * largeStep)` |
+| `FilterBandwidth` | `FilterBandwidth` | Read filter → adjust symmetrically → `SetFilter` |
+| `FilterHigh` | `FilterHigh` | Read filter → `SetFilter(lo, hi + delta)` |
+| `FilterLow` | `FilterLow` | Read filter → `SetFilter(lo + delta, hi)` |
+| `FilterShift` | `FilterShift` | Read filter → shift both → `SetFilter(lo+d, hi+d)` |
+| `TxFilterHigh` | `TXFilterHigh` | Read TX filter → `SetTxFilter(lo, hi + delta)` |
+| `TxFilterLow` | `TXFilterLow` | Read TX filter → `SetTxFilter(lo + delta, hi)` |
+| `ZoomWheel` | `ZoomSliderInc` | `SetZoom(current + delta)` |
+| `AfGainWheel` | `VolumeVfoA_inc` | `SetRxAfGain(current + delta)` |
+| `AgcLevelWheel` | `AGCLevel_inc` | `SetAgcTop(current + delta)` |
+| `DriveWheel` | `DriveLevel_inc` | `SetDrive(current + delta)` |
+
+### 6.4 MIDI-Internal meta-commands
 
 | ZeusMidiCommand | Thetis Equivalent | Description |
 |---|---|---|
@@ -296,7 +334,17 @@ These commands need the state mirror (§6.0) to read current state, compute the 
 | `WheelSensDown` | `MidiMessagesPerTuneStepDown` | Decrease |
 | `WheelSensToggle` | `MidiMessagesPerTuneStepToggle` | Toggle high/low sensitivity |
 
-**Grand total v1: 62 radio commands + 3 meta-commands = 65.**
+### 6.5 Summary
+
+| Category | Count |
+|---|---|
+| Buttons | ~45 (14 mode + 14 band + 4 NR/NB + 2 ANF/SNB + 2 filter + 2 zoom + 2 VFO jump + TX/mute/agc/preamp/etc.) |
+| Knobs | 9 |
+| Wheels | 12 |
+| Meta | 3 |
+| **Total** | **~69** |
+
+Compared to the previous REST-based approach (~62), this adds **NB1, NB2, ANF, SNB, attenuator knob, auto-att toggle, filter shift wheel** — 7 commands that were MISSING before. More importantly, every command goes through one clean interface with no HTTP coupling.
 
 ## 7. Mapping Model
 
@@ -441,7 +489,7 @@ React component mounted at `settings.plugins` slot. Minimal, functional.
 |---|---|---|
 | DryWetMidi API changes or abandonment | Engine layer breaks | Thin `IMidiEngine` abstraction — swap library without touching dispatcher or UI |
 | ALSA shim edge cases (exotic USB-MIDI adapters) | Linux devices not detected | Start with standard USB class-compliant devices; widen support based on bug reports |
-| `IRadioController` too narrow (3 methods) | Can't dispatch most commands | Use direct HTTP calls to Zeus REST endpoints from within the plugin. The plugin declares `NetworkAccess` capability. Port discovered from ASP.NET config (not hardcoded). `IRadioController` is a convenience for freq/mode/MOX, not the only path. Long-term: propose expanding `IRadioController` to cover the top ~15 commands (drive, filter, band, NR, zoom) to reduce coupling to internal DTOs |
+| `IRadioCommandSurface` extraction requires core change | Blocks plugin development | Mechanical refactor — extract interface from existing public methods, no new logic. TciSession is the proof that the surface is stable and correct. Red-light item §14 |
 | Mapping table concurrency | MIDI thread reads, UI thread writes | Use `ConcurrentDictionary` or `ReaderWriterLockSlim` for the mapping table. Document thread ownership in code |
 | MIDI CC flood (encoder sending 100+ msg/sec) | Overwhelm REST endpoint | Throttle: coalesce rapid CC values, dispatch at max 30 Hz per control |
 | Device name string mismatch across OS | Same controller = different name on Win vs. Mac | Match by substring (case-insensitive), same approach as Thetis |
@@ -450,10 +498,9 @@ React component mounted at `settings.plugins` slot. Minimal, functional.
 
 1. **New NuGet dependency** — `Melanchall.DryWetMidi` (MIT). Isolated to plugin, not core Zeus. Acceptable?
 2. **Plugin ID and ownership** — `com.openhpsdr.zeus.midi` implies official. Ship in the registry or as community plugin?
-3. **IRadioController expansion** — currently only `SetFrequencyAsync`, `SetModeAsync`, `SetMoxAsync`. Should the plugin SDK grow to cover band, filter, drive, etc.? Or should the MIDI plugin call Zeus REST directly?
-4. **v1 command set** — the ~55 READY commands per §6. Any to add or drop?
+3. **`IRadioCommandSurface` extraction** — extracting an interface from `RadioService` / `TxService` public methods and exposing it via `IPluginContext`. This is the key enabler: TciSession and the MIDI plugin share the same dispatch surface. Mechanical refactor, no behavior change, but it touches `Zeus.Plugins.Contracts` (new interface) and `Zeus.Server.Hosting` (wiring). Acceptable?
+4. **v1 command set** — ~69 commands per §6. Any to add or drop?
 5. **Settings panel slot** — `settings.plugins` category `controls`. Correct placement?
-6. **`IRadioController` expansion** — currently 3 methods (`SetFrequencyAsync`, `SetModeAsync`, `SetMoxAsync`). The MIDI plugin needs ~52 more commands via direct HTTP. Should the plugin SDK grow to cover drive, filter, band, NR, zoom, etc.? This reduces coupling to internal Zeus DTOs and makes third-party plugins more robust against endpoint changes.
 
 ## 15. References
 
