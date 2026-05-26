@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Zeus.Plugins.Contracts;
 using Zeus.Plugins.Contracts.Extensions;
 using Zeus.Plugins.Midi.Dispatch;
+using Zeus.Plugins.Midi.Learn;
 using Zeus.Plugins.Midi.Mapping;
 using Zeus.Plugins.Midi.Midi;
 
@@ -72,6 +73,26 @@ public sealed class ZeusMidiPlugin : IZeusPlugin, IBackendPlugin
 
         endpoints.MapGet("commands", () =>
             Results.Ok(Enum.GetNames<ZeusMidiCommand>()));
+
+        var learn = new LearnSession();
+        _engine.EventReceived += learn.OfferEvent;
+
+        endpoints.MapPost("learn/start", (LearnStartRequest req) =>
+        {
+            learn.Start(req.DeviceName, req.Command);
+            return Results.NoContent();
+        });
+
+        endpoints.MapGet("learn/last", () =>
+            learn.LastCaptured is { } ev
+                ? Results.Ok(new { ev.ControlType, ev.Channel, ev.ControlId, ev.Value })
+                : Results.Ok<object?>(null));
+
+        endpoints.MapPost("learn/stop", () =>
+        {
+            var result = learn.Stop();
+            return result is not null ? Results.Ok(result) : Results.Ok<object?>(null);
+        });
     }
 
     internal IMidiEngine EngineForTesting => _engine;
@@ -86,3 +107,5 @@ public sealed class ZeusMidiPlugin : IZeusPlugin, IBackendPlugin
         return new DryWetMidiEngine(_log);
     }
 }
+
+public sealed record LearnStartRequest(string DeviceName, ZeusMidiCommand Command);
