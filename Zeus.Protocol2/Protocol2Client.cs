@@ -397,16 +397,14 @@ public sealed class Protocol2Client : IDisposable, IAsyncDisposable
         _log.LogInformation("p2.stop totalFrames={Total} dropped={Drop}", _totalFrames, _droppedFrames);
     }
 
-    public void SetVfoAHz(long hz)
+    public void SetFreqs(long rxHz, long txHz)
     {
         double factor = BitConverter.Int64BitsToDouble(Interlocked.Read(ref _freqCorrectionBits));
-        // Host-side multiplicative correction, applied right before the
-        // phase-word feed slot (matches piHPSDR src/new_protocol.c:765,824,
-        // Thetis NetworkIO.VFOfreq, deskHPSDR src/new_protocol.c:909,967).
-        // _rxFreqHz then feeds the NCO phase-word at line 951
-        // (`rxPhase = _rxFreqHz * HzToPhase`).
-        long corrected = (long)Math.Round(hz * factor, MidpointRounding.AwayFromZero);
+        long corrected = (long)Math.Round(rxHz * factor, MidpointRounding.AwayFromZero);
         _rxFreqHz = (uint)Math.Clamp(corrected, 0L, uint.MaxValue);
+        // P2 TX freq routing is DDC-based; txHz is accepted for API
+        // symmetry with P1 but not yet wired to a separate NCO.
+        _ = txHz;
         var running = _rxTask is not null;
         _log.LogInformation("p2.tune hz={Hz} running={Running} hpSeq={Seq}",
             _rxFreqHz, running, _seqCmdHp);
@@ -416,7 +414,7 @@ public sealed class Protocol2Client : IDisposable, IAsyncDisposable
     /// <summary>
     /// Sets the per-radio frequency-correction factor (issue #325). The
     /// caller is responsible for re-pushing the current dial Hz via
-    /// <see cref="SetVfoAHz"/> after this so the new factor reaches the
+    /// <see cref="SetFreqs"/> after this so the new factor reaches the
     /// wire — this method on its own only mutates the multiplier used by
     /// the next tune-write.
     /// </summary>
@@ -429,7 +427,7 @@ public sealed class Protocol2Client : IDisposable, IAsyncDisposable
     /// <summary>
     /// Test seam (issue #325): the corrected NCO frequency that would be
     /// written to the wire on the next CmdHighPriority. Equals the last
-    /// <see cref="SetVfoAHz"/> argument multiplied by
+    /// <see cref="SetFreqs"/> argument multiplied by
     /// <see cref="FrequencyCorrectionFactor"/>.
     /// </summary>
     internal uint CorrectedRxFreqHzForTesting => _rxFreqHz;
