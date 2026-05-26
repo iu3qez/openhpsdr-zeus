@@ -44,11 +44,11 @@ public sealed class ZeusMidiPlugin : IZeusPlugin, IBackendPlugin
 
     internal void OverrideEngine(IMidiEngine engine) => _engine = engine;
 
-    private static IMidiEngine CreateEngine()
+    private IMidiEngine CreateEngine()
     {
-        // DryWetMidiEngine for Win/macOS will be added in Task 10.
-        // AlsaMidiEngine for Linux will be added in Phase 3.
-        // For now, NullMidiEngine everywhere.
-        return new NullMidiEngine();
+        if (OperatingSystem.IsLinux())
+            return new NullMidiEngine();
+
+        return new DryWetMidiEngine(_log);
     }
 }
