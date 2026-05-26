@@ -27,7 +27,7 @@ The command *vocabulary* is the reference; the implementation is not.
 
 ## 2. Goals
 
-1. **Thetis command parity on Zeus's existing API surface.** Every Midi2Cat command that Zeus already exposes as a REST/SignalR endpoint must be mappable from a MIDI controller on day one. Per the [cross-match reference](../references/thetis-midi2cat-commands.md), this is **~55 commands** (READY) + **~8 commands** (PARTIAL).
+1. **Thetis command parity on Zeus's existing API surface.** Every Midi2Cat command that Zeus already exposes as a REST/SignalR endpoint must be mappable from a MIDI controller on day one. Per the [cross-match reference](../references/thetis-midi2cat-commands.md), this is **35 commands** (READY — direct 1:1 endpoint mapping) + **27 commands** (PARTIAL — implementable with plugin-side read-modify-write or sequencing logic).
 2. **Plugin architecture.** Delivered as a Zeus plugin (`IZeusPlugin` + `IBackendPlugin`), not baked into the core. Installable/removable. Uses the existing plugin system contracts (SDK ABI 1).
 3. **Cross-platform.** Windows, macOS, Linux. Input only (no LED output in v1).
 4. **Learn mode.** Operator connects a controller, presses "Learn", moves a knob, and assigns it to a Zeus command. No manual MIDI channel/CC editing required.
@@ -39,7 +39,8 @@ The command *vocabulary* is the reference; the implementation is not.
 
 1. **LED / MIDI output feedback.** The messiest, most device-specific part of Midi2Cat. Deferred to a future version if demand exists.
 2. **RX2 commands.** Zeus does not implement RX2. The ~80 RX2/N/A commands from Midi2Cat are out of scope.
-3. **Commands Zeus doesn't expose.** The ~95 MISSING commands (RIT/XIT, VOX, CW speed, NB toggles, squelch, etc.) cannot be wired until Zeus adds the corresponding API surface. The plugin will grow as Zeus does.
+3. **Commands Zeus doesn't expose.** The ~98 MISSING commands (RIT/XIT, VFO B, VOX, CW speed, NB toggles, squelch, etc.) cannot be wired until Zeus adds the corresponding API surface. The plugin will grow as Zeus does.
+8. **VFO B.** Zeus has no VFO B support (`VfoSetRequest` is VFO A only). VFO B commands are MISSING.
 4. **Thetis `midi2cat.xml` import.** Mappings are user-specific, quick to recreate via learn UI. A converter is not worth maintaining.
 5. **MIDI-over-Bluetooth, Network MIDI (rtpMIDI), MIDI 2.0.** Out of scope for v1.
 6. **Named preset library.** Single active mapping set per device. Named presets can come later.
@@ -70,7 +71,7 @@ com.openhpsdr.zeus.midi/
   "license": "GPL-2.0-or-later",
   "sdk": { "abi": 1, "minVersion": "1.0.0" },
   "entrypoint": { "assembly": "ZeusMidiPlugin.dll" },
-  "capabilities": ["ReadRadioState", "ControlRadio", "PersistSettings"],
+  "capabilities": ["ReadRadioState", "ControlRadio", "NetworkAccess", "PersistSettings"],
   "ui": {
     "modules": ["ui/midi-settings.es.js"],
     "panels": [
@@ -105,7 +106,7 @@ MidiDispatcher
 └── Learn mode: buffer last event, expose via hub
 
 ZeusMidiCommand (enum)
-├── ~55 commands matching READY Zeus endpoints
+├── 62 radio commands (35 READY + 27 PARTIAL) + 3 meta-commands
 └── Extensible as Zeus API surface grows
 ```
 
@@ -190,9 +191,15 @@ IMidiEngine engine = RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
 
 ## 6. Command Set (v1)
 
-The v1 command enum maps 1:1 to Zeus REST endpoints that exist today. Grouped by control type.
+The v1 command set covers **62 commands**: 35 READY (direct 1:1 endpoint mapping) + 27 PARTIAL (plugin implements sequencing logic). Grouped by control type.
 
-### 6.1 Buttons (toggle / momentary)
+### 6.0 State Mirror
+
+Many PARTIAL commands require knowing the current radio state (current mode for mode-next, current bandwidth for filter-wider, current NR config for NR toggle, etc.). Rather than doing a GET-then-POST for every event, the plugin subscribes to the Zeus WebSocket (`/ws`) at init and maintains a **local state mirror**. This gives zero-latency reads for every dispatch.
+
+### 6.1 READY — Buttons (toggle / momentary)
+
+Direct 1:1 mapping, no state read required.
 
 | ZeusMidiCommand | Thetis Equivalent | Zeus Endpoint |
 |---|---|---|
@@ -201,18 +208,12 @@ The v1 command enum maps 1:1 to Zeus REST endpoints that exist today. Grouped by
 | `TwoTone` | `TwoToneOnOff` | `POST /api/tx/twotone` |
 | `PureSignal` | `PSOnOff` | `POST /api/tx/ps` |
 | `Mute` | `MuteOnOff` | `POST /api/audio/native/mute` |
-| `Nr1` | `NoiseReductionOnOff` | `POST /api/rx/nr` |
-| `Nr2` | `NoiseReduction2OnOff` | `POST /api/rx/nr` |
-| `Nr3` | `NoiseReduction3OnOff` | `POST /api/rx/nr` |
 | `Nr4` | `NoiseReduction4OnOff` | `POST /api/rx/nr4` |
 | `AutoAgc` | `RX1AutoAGC` | `POST /api/auto-agc` |
-| `BandUp` | `BandUp` | `POST /api/bands/current` |
-| `BandDown` | `BandDown` | `POST /api/bands/current` |
-| `Band160m`..`Band2m` | `Band160m`..`Band2m` | `POST /api/bands/current` |
-| `ModeNext` | `Rx1ModeNext` | `POST /api/mode` |
-| `ModePrev` | `Rx1ModePrev` | `POST /api/mode` |
+| `ModeSsb` | `ModeSSB` | `POST /api/mode` |
 | `ModeLsb` | `ModeLSB` | `POST /api/mode` |
 | `ModeUsb` | `ModeUSB` | `POST /api/mode` |
+| `ModeDsb` | `ModeDSB` | `POST /api/mode` |
 | `ModeCw` | `ModeCW` | `POST /api/mode` |
 | `ModeCwl` | `ModeCWL` | `POST /api/mode` |
 | `ModeCwu` | `ModeCWU` | `POST /api/mode` |
@@ -221,19 +222,18 @@ The v1 command enum maps 1:1 to Zeus REST endpoints that exist today. Grouped by
 | `ModeDigu` | `ModeDIGU` | `POST /api/mode` |
 | `ModeDigl` | `ModeDIGL` | `POST /api/mode` |
 | `ModeSam` | `ModeSAM` | `POST /api/mode` |
-| `ModeDsb` | `ModeDSB` | `POST /api/mode` |
 | `ModeSpec` | `ModeSPEC` | `POST /api/mode` |
 | `ModeDrm` | `ModeDRM` | `POST /api/mode` |
-| `FilterWider` | `Rx1FilterWider` | `POST /api/bandwidth` |
-| `FilterNarrower` | `Rx1FilterNarrower` | `POST /api/bandwidth` |
 | `ZoomIn` | `ZoomInc` | `POST /api/rx/zoom` |
 | `ZoomOut` | `ZoomDec` | `POST /api/rx/zoom` |
+| `VfoADown100k` | `MoveVFOADown100Khz` | read state → `POST /api/vfo` (freq - 100 kHz) |
+| `VfoAUp100k` | `MoveVFOAUp100Khz` | read state → `POST /api/vfo` (freq + 100 kHz) |
 
-### 6.2 Knobs / Sliders (absolute 0–127)
+### 6.2 READY — Knobs / Sliders (absolute 0–127)
 
 | ZeusMidiCommand | Thetis Equivalent | Zeus Endpoint |
 |---|---|---|
-| `AfGain` | `SetAFGain` | `POST /api/rx/afGain` |
+| `AfGain` | `SetAFGain` / `VolumeVfoA` | `POST /api/rx/afGain` |
 | `AgcLevel` | `AGCLevel` | `POST /api/agcGain` |
 | `Preamp` | `PreAmpSettingsKnob` | `POST /api/preamp` |
 | `Drive` | `DriveLevel` | `POST /api/tx/drive` |
@@ -243,12 +243,12 @@ The v1 command enum maps 1:1 to Zeus REST endpoints that exist today. Grouped by
 | `Nr4Amount` | `NoiseReduction4Amount` | `POST /api/rx/nr4` |
 | `Zoom` | `ZoomSliderFix` | `POST /api/rx/zoom` |
 
-### 6.3 Wheels / Encoders (relative ±delta)
+### 6.3 READY — Wheels / Encoders (relative ±delta)
 
 | ZeusMidiCommand | Thetis Equivalent | Zeus Endpoint |
 |---|---|---|
 | `VfoATune` | `ChangeFreqVfoA` | `POST /api/vfo` |
-| `VfoBTune` | `ChangeFreqVfoB` | `POST /api/vfo` |
+| `VfoAMultiStep` | `MultiStepVfoA` | `POST /api/vfo` (larger step) |
 | `FilterBandwidth` | `FilterBandwidth` | `POST /api/bandwidth` |
 | `FilterHigh` | `FilterHigh` | `POST /api/filter` |
 | `FilterLow` | `FilterLow` | `POST /api/filter` |
@@ -259,7 +259,44 @@ The v1 command enum maps 1:1 to Zeus REST endpoints that exist today. Grouped by
 | `AgcLevelWheel` | `AGCLevel_inc` | `POST /api/agcGain` |
 | `DriveWheel` | `DriveLevel_inc` | `POST /api/tx/drive` |
 
-**Total v1 commands: ~55** (33 buttons + 9 knobs + 11 wheels + 2 MIDI-internal meta-commands for wheel sensitivity).
+**Subtotal READY: 35** (25 buttons + 9 knobs + 11 wheels — 10 overlap as wheel variants of knob commands)
+
+### 6.4 PARTIAL — require plugin-side state + sequencing logic
+
+These commands need the state mirror (§6.0) to read current state, compute the target, and POST.
+
+| ZeusMidiCommand | Thetis Equivalent | Type | Logic |
+|---|---|---|---|
+| `BandUp` | `BandUp` | B | Read band memory → find next band → `POST /api/vfo` + `POST /api/mode` |
+| `BandDown` | `BandDown` | B | Same, previous band |
+| `Band160m`..`Band2m` | `Band160m`..`Band2m` | B | Read band memory for target band → `POST /api/vfo` + `POST /api/mode` (12 commands) |
+| `ModeNext` | `Rx1ModeNext` | B | Read current mode → compute next in sequence → `POST /api/mode` |
+| `ModePrev` | `Rx1ModePrev` | B | Same, previous |
+| `FilterWider` | `Rx1FilterWider` | B | Read current (low, high) → widen by step → `POST /api/bandwidth` |
+| `FilterNarrower` | `Rx1FilterNarrower` | B | Same, narrow |
+| `FilterShift` | `FilterShift` | K | Read current (low, high) → shift both edges → `POST /api/filter` |
+| `Nr1` | `NoiseReductionOnOff` | B | Read full `NrConfig` → flip NR mode → `POST /api/rx/nr` |
+| `Nr2` | `NoiseReduction2OnOff` | B | Same pattern |
+| `Nr3` | `NoiseReduction3OnOff` | B | Same pattern |
+| `MonOnOff` | `MONOnOff` | B | Toggle via `POST /api/tx/monitor` |
+| `DisplayAvg` | `DisplayAverage` | B | Read-modify-write `PUT /api/display-settings` |
+| `DisplayPeak` | `DisplayPeak` | B | Same |
+| `DisplayTxFilter` | `DisplayTxFilter` | B | Same |
+| `WaterfallLow` | `WaterfallLowLimit` | K | Same |
+| `WaterfallHigh` | `WaterfallHighLimit` | K | Same |
+| `StartStop` | `StartOnOff` | B | `POST /api/connect` or `POST /api/disconnect` based on current state |
+
+**Subtotal PARTIAL: 27** (14 band + 2 mode + 2 filter + 1 filter shift + 3 NR + 1 MON + 3 display + 1 start)
+
+### 6.5 MIDI-Internal meta-commands (plugin-only, no Zeus API)
+
+| ZeusMidiCommand | Thetis Equivalent | Description |
+|---|---|---|
+| `WheelSensUp` | `MidiMessagesPerTuneStepUp` | Increase wheel messages-per-VFO-step |
+| `WheelSensDown` | `MidiMessagesPerTuneStepDown` | Decrease |
+| `WheelSensToggle` | `MidiMessagesPerTuneStepToggle` | Toggle high/low sensitivity |
+
+**Grand total v1: 62 radio commands + 3 meta-commands = 65.**
 
 ## 7. Mapping Model
 
@@ -309,15 +346,15 @@ The v1 command enum maps 1:1 to Zeus REST endpoints that exist today. Grouped by
 
 - **Knobs/Sliders** (absolute CC 0–127): linearly scaled to the target parameter's range (e.g., 0–127 → 0–100% drive).
 - **Encoders** (relative CC): interpreted as signed delta. Common encoding conventions supported:
-  - **Twos complement:** 1–63 = CW, 65–127 = CCW (default)
-  - **Sign-magnitude:** 1–63 = CW, 65–127 = CCW (bit 6 = direction)
-  - **Offset binary:** 64 = center, >64 = CW, <64 = CCW
+  - **Twos complement** (default): 1–63 = CW (positive delta), 65–127 = CCW (negative delta, i.e. 127 = -1, 126 = -2, …)
+  - **Sign-magnitude:** bit 6 is direction flag. 1–63 = CW, 65–127 = CCW (value = 64 + magnitude)
+  - **Offset binary:** 64 = center/no motion, >64 = CW, <64 = CCW
   - Configurable per mapping via `options.encoderMode`.
 - **Buttons** (NoteOn): toggle or momentary, configurable via `options.toggle`.
 
 ### 7.4 Persistence
 
-Mappings stored via `IPluginSettings` (LiteDB-backed, scoped to plugin ID). No filesystem access required — `PersistSettings` capability is granted by default.
+Mappings stored via `IPluginSettings` (LiteDB-backed, scoped to plugin ID). The entire mapping structure (§7.1) is serialized as a single JSON value under one key (e.g. `"mappings"`), since `IPluginSettings` is a key-value store (`GetAsync<T>(key)` / `SetAsync<T>(key, value)`), not a document database. No filesystem access required — `PersistSettings` capability is granted by default.
 
 ## 8. Learn Mode
 
@@ -404,7 +441,8 @@ React component mounted at `settings.plugins` slot. Minimal, functional.
 |---|---|---|
 | DryWetMidi API changes or abandonment | Engine layer breaks | Thin `IMidiEngine` abstraction — swap library without touching dispatcher or UI |
 | ALSA shim edge cases (exotic USB-MIDI adapters) | Linux devices not detected | Start with standard USB class-compliant devices; widen support based on bug reports |
-| `IRadioController` too narrow (3 methods) | Can't dispatch most commands | Use direct HTTP calls to Zeus REST endpoints from within the plugin (same-host `localhost:6060`). `IRadioController` is a convenience, not the only path |
+| `IRadioController` too narrow (3 methods) | Can't dispatch most commands | Use direct HTTP calls to Zeus REST endpoints from within the plugin. The plugin declares `NetworkAccess` capability. Port discovered from ASP.NET config (not hardcoded). `IRadioController` is a convenience for freq/mode/MOX, not the only path. Long-term: propose expanding `IRadioController` to cover the top ~15 commands (drive, filter, band, NR, zoom) to reduce coupling to internal DTOs |
+| Mapping table concurrency | MIDI thread reads, UI thread writes | Use `ConcurrentDictionary` or `ReaderWriterLockSlim` for the mapping table. Document thread ownership in code |
 | MIDI CC flood (encoder sending 100+ msg/sec) | Overwhelm REST endpoint | Throttle: coalesce rapid CC values, dispatch at max 30 Hz per control |
 | Device name string mismatch across OS | Same controller = different name on Win vs. Mac | Match by substring (case-insensitive), same approach as Thetis |
 
@@ -415,6 +453,7 @@ React component mounted at `settings.plugins` slot. Minimal, functional.
 3. **IRadioController expansion** — currently only `SetFrequencyAsync`, `SetModeAsync`, `SetMoxAsync`. Should the plugin SDK grow to cover band, filter, drive, etc.? Or should the MIDI plugin call Zeus REST directly?
 4. **v1 command set** — the ~55 READY commands per §6. Any to add or drop?
 5. **Settings panel slot** — `settings.plugins` category `controls`. Correct placement?
+6. **`IRadioController` expansion** — currently 3 methods (`SetFrequencyAsync`, `SetModeAsync`, `SetMoxAsync`). The MIDI plugin needs ~52 more commands via direct HTTP. Should the plugin SDK grow to cover drive, filter, band, NR, zoom, etc.? This reduces coupling to internal Zeus DTOs and makes third-party plugins more robust against endpoint changes.
 
 ## 15. References
 
